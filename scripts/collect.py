@@ -253,13 +253,44 @@ def _stamp(obj: dict) -> dict:
     return {"schema_version": so_schema.EVIDENCE_VERSION, "harness": so_schema.HARNESS, **obj}
 
 
-def write_pack(out_dir: Path, pack: dict) -> None:
+def constraints_pack(lpath: Path, limit: int = 20) -> dict:
+    """Standing constraints for analysts: the most recently rejected recommendations.
+    Reads the ledger jsonl directly rather than ledger.load() — load() collapses to
+    one entry per id, and the 'rejected' entry (appended after 'proposed') carries no
+    title of its own, so the title has to be picked up from the earlier line."""
+    lpath = Path(lpath)
+    rejected, id_title = [], {}
+    if lpath.exists():
+        for line in lpath.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(e, dict) or "id" not in e:
+                continue
+            rec = e.get("rec") or {}
+            if rec.get("title"):
+                id_title[e["id"]] = rec["title"]
+            if e.get("status") == "rejected":
+                rejected.append(e)
+    rejected = rejected[-limit:]
+    return _stamp({"rejected": [{"title": id_title.get(e["id"], ""),
+                                 "reason": e.get("reason", ""), "ts": e.get("ts", "")}
+                                for e in rejected]})
+
+
+def write_pack(out_dir: Path, pack: dict, constraints: dict | None = None) -> None:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "sessions.json").write_text(json.dumps(_stamp({"sessions": pack["sessions"]}), indent=1))
     (out_dir / "usage.json").write_text(json.dumps(_stamp(pack["usage"]), indent=1))
     (out_dir / "activation.json").write_text(json.dumps(_stamp(pack["activation"]), indent=1))
     (out_dir / "samples.json").write_text(json.dumps(_stamp({"samples": pack["samples"]}), indent=1))
+    if constraints is not None:
+        (out_dir / "constraints.json").write_text(json.dumps(constraints, indent=1))
     for f in out_dir.glob("*.json"):
         f.chmod(0o600)
 
@@ -301,7 +332,8 @@ def main(argv=None):
         since = (datetime.now(timezone.utc) - timedelta(days=cfg["since_days"])).isoformat()
     pack = collect_corpus(data_root, since, cfg["project_include"],
                           cfg["project_exclude"], correction_re, cfg["sample_caps"])
-    write_pack(Path(a.out), pack)
+    constraints = constraints_pack(state / "state" / "ledger.jsonl")
+    write_pack(Path(a.out), pack, constraints)
     append_metrics(state, metrics_row(a.run_id, pack))
     t = pack["usage"]["totals"]
     print(f"sessions={t['sessions']} corrections={pack['usage']['corrections']['total']} "

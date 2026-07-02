@@ -60,6 +60,39 @@ class TestPack(unittest.TestCase):
         self.assertEqual(row["n_sessions"], 2)
         self.assertAlmostEqual(row["correction_rate"], 1.0)
 
+    def test_write_pack_includes_constraints_when_provided(self):
+        out = pathlib.Path(self.tmp) / "ev2"
+        pack = collect.collect_corpus(self.root, None, ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
+        constraints = {"schema_version": "1", "harness": "claude-code",
+                       "rejected": [{"title": "t", "reason": "r", "ts": "2026-06-01T00:00:00Z"}]}
+        collect.write_pack(out, pack, constraints)
+        c = json.loads((out / "constraints.json").read_text())
+        self.assertEqual(c["rejected"][0]["title"], "t")
+        mode = (out / "constraints.json").stat().st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
+    def test_constraints_pack_reads_last_20_rejected_with_titles(self):
+        lpath = pathlib.Path(self.tmp) / "state" / "state" / "ledger.jsonl"
+        lpath.parent.mkdir(parents=True)
+        lines = []
+        for i in range(25):
+            rid = f"r{i}"
+            lines.append(json.dumps({"id": rid, "status": "proposed",
+                                     "rec": {"title": f"idea {i}"}, "ts": f"2026-06-{i + 1:02d}T00:00:00Z"}))
+            lines.append(json.dumps({"id": rid, "status": "rejected", "reason": f"no {i}",
+                                     "ts": f"2026-06-{i + 1:02d}T00:05:00Z"}))
+        lpath.write_text("\n".join(lines) + "\n")
+        c = collect.constraints_pack(lpath)
+        self.assertEqual(c["schema_version"], "1")
+        self.assertEqual(len(c["rejected"]), 20)
+        self.assertEqual(c["rejected"][0]["title"], "idea 5")    # oldest of the most recent 20
+        self.assertEqual(c["rejected"][-1], {"title": "idea 24", "reason": "no 24",
+                                             "ts": "2026-06-25T00:05:00Z"})
+
+    def test_constraints_pack_missing_ledger_is_empty(self):
+        c = collect.constraints_pack(pathlib.Path(self.tmp) / "nope" / "ledger.jsonl")
+        self.assertEqual(c["rejected"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
