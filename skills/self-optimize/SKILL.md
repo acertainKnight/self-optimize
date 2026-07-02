@@ -2,7 +2,7 @@
 name: self-optimize
 description: Run the self-optimize loop — mine Claude Code transcripts + config, verify previously applied changes, and produce an evidence-cited optimization report. Also handles apply/reject/rollback subcommands.
 disable-model-invocation: true
-argument-hint: "[--stats-only] [--since YYYY-MM-DD] | apply <id[,id...]> | reject <id> [reason] | rollback <id>"
+argument-hint: "[--stats-only] [--since YYYY-MM-DD] [--max-budget N] | apply <id[,id...]> | reject <id> [reason] | rollback <id>"
 allowed-tools: Bash, Read, Write, Agent
 ---
 
@@ -28,7 +28,7 @@ echo its output verbatim to the user, and stop:
 ## Full run
 
 1. **Collect (deterministic, no LLM):**
-   `python3 SCRIPTS/collect.py --data-root DATA_ROOT --state STATE --out EV --run-id RUN_ID` (add `--since <ISO>` if the user passed `--since`), then
+   `python3 SCRIPTS/collect.py --data-root DATA_ROOT --state STATE --out EV --run-id RUN_ID` (add `--since <ISO>` if the user passed `--since`, and `--max-budget <N>` if the user passed `--max-budget`; if it exits 2, the budget is too small to sample anything useful — show the refusal message and stop rather than retrying), then
    `python3 SCRIPTS/inventory.py --data-root DATA_ROOT --state STATE --out EV`.
    Print both summary lines. If `STATE/config.json` did not exist before this run, tell
    the user it was created with defaults, and summarize what was read (session count,

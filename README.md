@@ -17,6 +17,7 @@ Personal-first and private. See SECURITY.md for the threat model before running.
 
     /self-optimize --stats-only     # first run: deterministic numbers, zero LLM tokens
     /self-optimize                  # full run: collect -> verify -> 2 analysts -> report
+    /self-optimize --max-budget 10000   # cap analyst input tokens; refuses below a 2000-token floor
     /self-optimize apply <id>       # apply a tier-A finding (snapshot + smoke-check)
     /self-optimize reject <id> "reason"   # suppress it, with memory of why
     /self-optimize rollback <id>    # restore the snapshot
@@ -40,7 +41,7 @@ keeps its own state, evidence, ledger, and reports in `<config-dir>/self-optimiz
 | project_include / project_exclude | `["*"]` / `[]` | fnmatch globs over project dir names |
 | since_days | 30 | analysis window |
 | sample_caps | 40 excerpts / 1500 tok / 60k total | bounds analyst input (and cost) |
-| max_budget_tokens | 400000 | advisory cap; sample caps are the enforcement |
+| max_budget_tokens | 400000 | default `--max-budget` in tokens; sample caps shrink to fit and collect.py refuses (exit 2) runs too small to sample usefully |
 | retain_runs | 10 | evidence dirs kept |
 | verify.min_sessions / min_rel_change | 10 / 0.10 | verification floors |
 

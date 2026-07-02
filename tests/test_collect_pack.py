@@ -102,6 +102,22 @@ class TestPack(unittest.TestCase):
         self.assertIn("[REDACTED:", reason)
         self.assertNotIn("sk-ant-api03-FAKESECRETFAKESECRET", reason)
 
+    def test_scale_caps_to_budget_shrinks_proportionally(self):
+        out = collect.scale_caps_to_budget(dict(CAPS), 10000)
+        self.assertEqual(out["total_tokens"], 2000)
+        self.assertEqual(out["excerpts"], 1)
+
+    def test_scale_caps_to_budget_no_cap_when_absent_or_generous(self):
+        self.assertEqual(collect.scale_caps_to_budget(dict(CAPS), 0), CAPS)
+        self.assertEqual(collect.scale_caps_to_budget(dict(CAPS), None), CAPS)
+        self.assertEqual(collect.scale_caps_to_budget(dict(CAPS), 1_000_000)["total_tokens"],
+                         CAPS["total_tokens"])
+
+    def test_scale_caps_to_budget_refuses_below_floor(self):
+        with self.assertRaises(SystemExit) as cm:
+            collect.scale_caps_to_budget(dict(CAPS), 9000)
+        self.assertEqual(cm.exception.code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

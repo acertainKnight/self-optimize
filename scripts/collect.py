@@ -249,6 +249,26 @@ def _cap_samples(samples, sessions, caps):
     return out
 
 
+def scale_caps_to_budget(caps: dict, budget: int | None, reserve: int = 8000, floor: int = 2000) -> dict:
+    """Shrinks sample_caps proportionally so total_tokens fits inside budget minus a
+    fixed overhead reserve (system prompt + rules + inventory the analysts also read).
+    Refuses (exit 2) rather than silently sampling too thin to be useful."""
+    if not budget:
+        return caps
+    allowed = max(0, budget - reserve)
+    if allowed < floor:
+        print(f"refusing: --max-budget {budget} leaves only {allowed} tokens for sampling "
+              f"(minimum {floor}) — raise the budget or omit --max-budget")
+        raise SystemExit(2)
+    if allowed >= caps["total_tokens"]:
+        return caps
+    scale = allowed / caps["total_tokens"]
+    out = dict(caps)
+    out["excerpts"] = max(1, round(caps["excerpts"] * scale))
+    out["total_tokens"] = allowed
+    return out
+
+
 def _stamp(obj: dict) -> dict:
     return {"schema_version": so_schema.EVIDENCE_VERSION, "harness": so_schema.HARNESS, **obj}
 
@@ -323,6 +343,7 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--since", default=None)
     ap.add_argument("--run-id", default=date.today().isoformat())
+    ap.add_argument("--max-budget", type=int, default=None)
     a = ap.parse_args(argv)
     data_root, state = so_config.resolve(a.data_root, a.state)
     cfg = so_config.load_config(state)
@@ -331,8 +352,10 @@ def main(argv=None):
     if since is None and cfg["since_days"]:
         from datetime import datetime, timedelta, timezone
         since = (datetime.now(timezone.utc) - timedelta(days=cfg["since_days"])).isoformat()
+    budget = a.max_budget if a.max_budget is not None else cfg.get("max_budget_tokens", 0)
+    caps = scale_caps_to_budget(cfg["sample_caps"], budget)
     pack = collect_corpus(data_root, since, cfg["project_include"],
-                          cfg["project_exclude"], correction_re, cfg["sample_caps"])
+                          cfg["project_exclude"], correction_re, caps)
     constraints = constraints_pack(state / "state" / "ledger.jsonl")
     write_pack(Path(a.out), pack, constraints)
     append_metrics(state, metrics_row(a.run_id, pack))
