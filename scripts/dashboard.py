@@ -5,9 +5,9 @@ back to `self-optimize decide`.
 decisions.json schema (downloaded from the dashboard, consumed by `apply.py decide`):
     {
       "run_id": str,
-      "apply": [id, ...],                       # tier-A ids to apply
-      "reject": [{"id": str, "reason": str}],   # tier-A ids to reject, reason required
-      "assist": [id, ...],                      # tier-B ids selected for human-supervised work
+      "apply": [id, ...],                       # applicable ids to apply (incl. diff)
+      "reject": [{"id": str, "reason": str}],   # applicable ids to reject, reason required
+      "assist": [id, ...],                      # manual ids selected for human-supervised work
       "amend": [{"id": str, "reason": str, "action": {...}}]   # reject id, apply this instead
     }
 Unknown top-level keys are ignored by the consumer; ids must be strings; run_id must
@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import ledger as ledger_mod
+import schema as so_schema
 from report import _cumulative_savings, _impact, _num
 
 _BADGE_CLASS = {
@@ -104,6 +105,7 @@ def _alts_for(rec: dict) -> list:
 def _card_html(rec: dict, entry: dict | None) -> str:
     rid = rec["id"]
     tier = rec["action"]["tier"]
+    applicable = so_schema.is_applicable(rec["action"])
     status = (entry or {}).get("status")
     interactive = status in _OPEN_STATUSES
     payload = rec["action"].get("payload", {})
@@ -124,7 +126,11 @@ def _card_html(rec: dict, entry: dict | None) -> str:
     parts.append(f'<p class="evidence">{_evidence_chips(rec["evidence_refs"])}</p>')
     parts.append(f'<p class="risk">{_esc(rec["risk"])}</p>')
     parts.append(f'<details><summary>payload</summary><pre>{_esc(_payload_body(payload))}</pre></details>')
-    if interactive and tier == "A":
+    if interactive and applicable:
+        # applicable = every tier-A type PLUS diff; amend guided-alts only ever
+        # populate for setting_change (see _alts_for) — a diff/file_create/etc.
+        # card still offers Apply/Reject/Skip and a custom-JSON amend, just with
+        # an empty canned-alternatives list.
         parts.append(
             '<div class="toggle" role="group">'
             f'<label><input type="radio" name="choice-{_esc(rid)}" value="apply"> Apply</label>'
@@ -141,7 +147,7 @@ def _card_html(rec: dict, entry: dict | None) -> str:
             f'<p class="amend-warn" id="amend-warn-{_esc(rid)}" hidden>Invalid action JSON.</p>'
             '</div>'
         )
-    elif interactive and tier == "B":
+    elif interactive:  # manual: the only remaining non-applicable type
         parts.append(
             f'<label class="assist-label"><input type="checkbox" id="assist-{_esc(rid)}"> '
             'Select for assisted work</label>'
@@ -294,9 +300,11 @@ _JS = """
   var STORAGE_KEY = 'so-dash-' + RUN_ID;
   var findingById = {};
   DATA.findings.forEach(function (f) { findingById[f.id] = f; });
-  var tierAIds = DATA.findings.filter(function (f) { return f.tier === 'A' && f.interactive; })
+  // routing is by TYPE (applicable), not literal tier: diff is tier B but applies
+  // like any tier-A action; only manual (applicable === false) is a hand-off.
+  var applicableIds = DATA.findings.filter(function (f) { return f.applicable && f.interactive; })
     .map(function (f) { return f.id; });
-  var tierBIds = DATA.findings.filter(function (f) { return f.tier === 'B' && f.interactive; })
+  var manualIds = DATA.findings.filter(function (f) { return !f.applicable && f.interactive; })
     .map(function (f) { return f.id; });
 
   function loadState() {
@@ -347,7 +355,7 @@ _JS = """
     }
   }
 
-  tierAIds.forEach(function (id) {
+  applicableIds.forEach(function (id) {
     populateAmendSelect(id);
     var saved = state.decisions[id] || {};
     var choice = saved.choice || 'skip';
@@ -368,14 +376,14 @@ _JS = """
       customArea.style.display = (sel && sel.value === 'custom') ? '' : 'none';
     }
   });
-  tierBIds.forEach(function (id) {
+  manualIds.forEach(function (id) {
     var cb = document.getElementById('assist-' + id);
     if (cb) cb.checked = state.assist.indexOf(id) !== -1;
   });
 
   function recompute() {
     var decisions = {};
-    tierAIds.forEach(function (id) {
+    applicableIds.forEach(function (id) {
       var checked = document.querySelector('input[name="choice-' + id + '"]:checked');
       var choice = checked ? checked.value : 'skip';
       var reasonInput = document.getElementById('reason-' + id);
@@ -397,7 +405,7 @@ _JS = """
         amendSel: amendSel, amendCustom: customArea ? customArea.value : ''
       };
     });
-    var assist = tierBIds.filter(function (id) {
+    var assist = manualIds.filter(function (id) {
       var cb = document.getElementById('assist-' + id);
       return cb && cb.checked;
     });
@@ -407,7 +415,7 @@ _JS = """
   }
 
   function amendEntries() {
-    return tierAIds.filter(function (id) {
+    return applicableIds.filter(function (id) {
       return state.decisions[id] && state.decisions[id].choice === 'amend';
     }).map(function (id) {
       var d = state.decisions[id];
@@ -417,14 +425,14 @@ _JS = """
   }
 
   function renderFooter() {
-    var applyIds = tierAIds.filter(function (id) {
+    var applyIds = applicableIds.filter(function (id) {
       return state.decisions[id] && state.decisions[id].choice === 'apply';
     });
-    var rejectEntries = tierAIds.filter(function (id) {
+    var rejectEntries = applicableIds.filter(function (id) {
       return state.decisions[id] && state.decisions[id].choice === 'reject';
     }).map(function (id) { return { id: id, reason: state.decisions[id].reason }; });
     var amends = amendEntries();
-    var skipCount = tierAIds.length - applyIds.length - rejectEntries.length - amends.length;
+    var skipCount = applicableIds.length - applyIds.length - rejectEntries.length - amends.length;
     var missingReason = rejectEntries.some(function (r) { return !r.reason; });
     var badAmend = amends.some(function (a) { return !a.valid; });
     var blocked = missingReason || badAmend;
@@ -459,10 +467,10 @@ _JS = """
   });
 
   document.getElementById('download-btn').addEventListener('click', function () {
-    var applyIds = tierAIds.filter(function (id) {
+    var applyIds = applicableIds.filter(function (id) {
       return state.decisions[id] && state.decisions[id].choice === 'apply';
     });
-    var reject = tierAIds.filter(function (id) {
+    var reject = applicableIds.filter(function (id) {
       return state.decisions[id] && state.decisions[id].choice === 'reject';
     }).map(function (id) { return { id: id, reason: state.decisions[id].reason }; });
     if (reject.some(function (r) { return !r.reason; })) return;
@@ -480,10 +488,10 @@ _JS = """
   });
 
   document.getElementById('copy-btn').addEventListener('click', function () {
-    var applyIds = tierAIds.filter(function (id) {
+    var applyIds = applicableIds.filter(function (id) {
       return state.decisions[id] && state.decisions[id].choice === 'apply';
     });
-    var rejectEntries = tierAIds.filter(function (id) {
+    var rejectEntries = applicableIds.filter(function (id) {
       return state.decisions[id] && state.decisions[id].choice === 'reject';
     }).map(function (id) { return { id: id, reason: state.decisions[id].reason }; });
     if (rejectEntries.some(function (r) { return !r.reason; })) return;
@@ -524,6 +532,7 @@ def render_dashboard(run_id, findings, dropped, verify_rows, cumulative, usage,
         "run_id": run_id,
         "findings": [
             {"id": f["id"], "tier": f.get("action", {}).get("tier"),
+             "applicable": so_schema.is_applicable(f.get("action", {})),
              "interactive": (ledger_entries.get(f["id"]) or {}).get("status") in _OPEN_STATUSES,
              "alts": _alts_for(f)}
             for f in findings

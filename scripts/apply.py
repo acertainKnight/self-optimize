@@ -1,4 +1,5 @@
-"""apply / rollback / reject. Tier-A only, per-item human approval upstream.
+"""apply / rollback / reject. Every applicable action type (tier-A plus diff),
+per-item human approval upstream — manual is the only permanent hand-off.
 Per-rec file snapshots; post-apply smoke validation with automatic restore (the ONLY
 auto-rollback case — metric regressions are flagged by verify, never auto-reverted);
 metric baseline captured at apply time so verification is possible at all."""
@@ -67,19 +68,19 @@ def cmd_apply(ids, state, data_root, evidence):
             print(f"{rid}: not applicable (status={e['status'] if e else 'unknown'})")
             continue
         rec = e["rec"]
-        if rec["action"]["tier"] != "A":
-            print(f"{rid}: tier {rec['action'].get('tier')} — not auto-applicable, "
-                  f"apply manually (see the report)")
+        if not so_schema.is_applicable(rec["action"]):
+            print(f"{rid}: manual action — complete it yourself (see the report)")
             continue
         try:
             edits = templates.render(rec["action"], Path(data_root), extra_roots)
-        except (ValueError, KeyError, TypeError) as err:
-            # KeyError/TypeError alongside ValueError: templates.render indexes
-            # payload fields directly (p["value"], p["path"], dict lookups keyed by
-            # key_path elements, re.escape(p["key"]), Path(p["path"]), ...), so a
-            # malformed payload — schema/guard only check shape, not every field's
-            # presence or type — must fail cleanly here rather than crash the whole
-            # decide/apply run.
+        except (ValueError, KeyError, TypeError, AttributeError) as err:
+            # KeyError/TypeError/AttributeError alongside ValueError: templates.render
+            # indexes payload fields directly (p["value"], p["path"], dict lookups keyed
+            # by key_path elements, re.escape(p["key"]), Path(p["path"]), a non-str
+            # diff's .split() in _apply_unified_diff, ...), so a malformed payload —
+            # schema/guard only check shape, not every field's presence or type — must
+            # fail cleanly here rather than crash the whole decide/apply run (mirrors
+            # cmd_decide's amend guard wrapper, which catches the same class).
             ledger_mod.append(lpath, {"id": rid, "status": "apply_failed",
                                       "errors": [f"malformed payload: {err}"],
                                       "evidence_hash": e.get("evidence_hash")})
@@ -306,11 +307,13 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
             replacement["action"] = action
             replacement["title"] = "Amended: " + e["rec"].get("title", "")
             errs = so_schema.validate_rec(replacement)
-            # amend always auto-applies its replacement, so tier-B (report-only,
-            # never executed) can't be what "amended" means here even though guard()
-            # legitimately allows tier-B actions through for the ordinary tier-B path
-            if not errs and action.get("tier") != "A":
-                errs = ["amend replacement must be a tier-A action"]
+            # amend always auto-applies its replacement, so it must be an
+            # applicable action (every tier-A type, plus diff) — manual is
+            # report-only and can never be what "amended" means here, even
+            # though guard() legitimately allows it through for the ordinary
+            # manual (never-executed) path
+            if not errs and not so_schema.is_applicable(action):
+                errs = ["amend replacement must be an applicable action (manual is report-only)"]
             if not errs:
                 # guard()/rec_id assume a reasonably well-typed payload (true for
                 # synth's own analyst-generated recs); amend feeds it a hand-typed

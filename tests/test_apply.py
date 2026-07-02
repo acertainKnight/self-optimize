@@ -130,6 +130,54 @@ class TestApply(unittest.TestCase):
         apply_mod.cmd_apply(["r5"], self.state, self.data, self.ev)
         self.assertEqual(ledger.load(self.lpath)["r5"]["status"], "apply_failed")
 
+    def test_diff_rec_applies_with_snapshot_and_rollback(self):
+        agent_dir = self.data / "agents"
+        agent_dir.mkdir()
+        target = agent_dir / "helper.md"
+        original = "---\nname: helper\nmodel: sonnet\n---\nold body\n"
+        target.write_text(original)
+        rec = setting_rec()
+        rec["action"] = {"harness": "claude-code", "tier": "B", "type": "diff",
+                         "payload": {"file": str(target),
+                                     "diff": "@@ -5,1 +5,1 @@\n-old body\n+new body\n"}}
+        ledger.append(self.lpath, {"id": "r7", "status": "proposed", "rec": rec,
+                                   "evidence_hash": "e7"})
+        apply_mod.cmd_apply(["r7"], self.state, self.data, self.ev)
+        self.assertEqual(target.read_text(), "---\nname: helper\nmodel: sonnet\n---\nnew body\n")
+        e = ledger.load(self.lpath)["r7"]
+        self.assertEqual(e["status"], "applied")
+        self.assertTrue(pathlib.Path(e["snapshot"]).exists())
+        apply_mod.cmd_rollback("r7", self.state)
+        self.assertEqual(target.read_text(), original)
+        self.assertEqual(ledger.load(self.lpath)["r7"]["status"], "rolled_back")
+
+    def test_diff_rec_non_string_diff_payload_fails_cleanly_not_crash(self):
+        # a non-str "diff" field (e.g. a hand-typed amend action, or a
+        # malformed analyst payload) would AttributeError inside
+        # _apply_unified_diff's .split("\n") -- must mark apply_failed, not
+        # crash the whole apply/decide batch.
+        rec = setting_rec()
+        rec["action"] = {"harness": "claude-code", "tier": "B", "type": "diff",
+                         "payload": {"file": "/x/CLAUDE.md", "diff": None}}
+        ledger.append(self.lpath, {"id": "r9", "status": "proposed", "rec": rec,
+                                   "evidence_hash": "e9"})
+        apply_mod.cmd_apply(["r9"], self.state, self.data, self.ev)   # must not raise
+        e = ledger.load(self.lpath)["r9"]
+        self.assertEqual(e["status"], "apply_failed")
+        self.assertTrue(any("malformed payload" in x for x in e.get("errors", [])))
+
+    def test_manual_rec_skipped_with_handoff_message(self):
+        rec = setting_rec()
+        rec["action"] = {"harness": "claude-code", "tier": "B", "type": "manual",
+                         "payload": {"description": "install the plugin by hand"}}
+        ledger.append(self.lpath, {"id": "r8", "status": "proposed", "rec": rec,
+                                   "evidence_hash": "e8"})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            apply_mod.cmd_apply(["r8"], self.state, self.data, self.ev)
+        self.assertIn("manual action", buf.getvalue())
+        self.assertEqual(ledger.load(self.lpath)["r8"]["status"], "proposed")   # untouched
+
     def test_memory_root_file_create_via_inventory_extra_roots(self):
         mem = self.data.parent / "mem"
         mem.mkdir()
@@ -726,6 +774,27 @@ class TestDecide(unittest.TestCase):
             result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
         self.assertEqual(len(result["amend_refused"]), 1)
         self.assertIn("AMEND REFUSED", buf.getvalue())
+
+    def test_amend_diff_replacement_now_allowed(self):
+        # P5: applicability, not tier, gates amend replacements too -- a diff
+        # replacement (tier B, but now applicable) must be allowed, not refused
+        # for "not tier A" (that rationale no longer holds now that diff applies).
+        agent_dir = self.data / "agents"
+        agent_dir.mkdir()
+        target = agent_dir / "helper.md"
+        target.write_text("---\nname: helper\nmodel: sonnet\n---\nold body\n")
+        diff_action = {"harness": "claude-code", "tier": "B", "type": "diff",
+                       "payload": {"file": str(target),
+                                   "diff": "@@ -5,1 +5,1 @@\n-old body\n+new body\n"}}
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r1", "reason": "prefer a targeted diff", "action": diff_action}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(len(result["amended"]), 1)
+        self.assertEqual(result["amend_refused"], [])
+        self.assertIn("new body", target.read_text())
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "rejected")
 
     def test_backward_compat_no_amend_key(self):
         dfile = self.downloads / "self-optimize-decisions-ev.json"

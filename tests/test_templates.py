@@ -154,6 +154,158 @@ class TestTemplates(unittest.TestCase):
                               "payload": {"file": str(self.root / "agents" / "ghost.md"),
                                           "key": "model", "value": "haiku"}}, self.root)
 
+    def test_apply_unified_diff_additive_new_file(self):
+        result = templates._apply_unified_diff("", "@@ -0,0 +1,2 @@\n+line1\n+line2\n")
+        self.assertEqual(result, "line1\nline2\n")
+
+    def test_apply_unified_diff_multi_hunk(self):
+        original = "line1\nline2\nline3\nline4\nline5\n"
+        diff = ("@@ -2,1 +2,1 @@\n-line2\n+line2mod\n"
+                "@@ -4,1 +4,1 @@\n-line4\n+line4mod\n")
+        result = templates._apply_unified_diff(original, diff)
+        self.assertEqual(result, "line1\nline2mod\nline3\nline4mod\nline5\n")
+
+    def test_apply_unified_diff_zero_count_insert_after_last_line(self):
+        # a pure-insertion hunk ("-N,0") means "insert after old line N", not
+        # "insert before old line N" -- verified against GNU patch's actual
+        # behavior for this hunk shape (an off-by-one here would silently
+        # misplace every append-only diff, e.g. adding a new CLAUDE.md section).
+        original = "line1\nline2\nline3\nline4\nline5\n"
+        result = templates._apply_unified_diff(original, "@@ -5,0 +6,1 @@\n+NEWLINE\n")
+        self.assertEqual(result, "line1\nline2\nline3\nline4\nline5\nNEWLINE\n")
+
+    def test_apply_unified_diff_zero_count_insert_mid_file(self):
+        original = "line1\nline2\nline3\nline4\nline5\n"
+        result = templates._apply_unified_diff(original, "@@ -2,0 +3,1 @@\n+INSERTED\n")
+        self.assertEqual(result, "line1\nline2\nINSERTED\nline3\nline4\nline5\n")
+
+    def test_apply_unified_diff_context_mismatch_raises(self):
+        with self.assertRaises(ValueError):
+            templates._apply_unified_diff("line1\nline2\n", "@@ -1,1 +1,1 @@\n-WRONG\n+x\n")
+
+    def test_diff_render_to_real_claude_md(self):
+        import os as _os
+        claude_md = self.root / "CLAUDE.md"
+        claude_md.write_text("# Notes\nold line\n")
+        edits = templates.render({"type": "diff",
+                                  "payload": {"file": str(claude_md),
+                                              "diff": "@@ -2,1 +2,1 @@\n-old line\n+new line\n"}},
+                                 self.root)
+        self.assertEqual(str(edits[0][0]), _os.path.realpath(str(claude_md)))
+        self.assertEqual(edits[0][1], "# Notes\nnew line\n")
+
+    def test_diff_render_through_claude_md_symlink_writes_real_file(self):
+        real = self.root / "real-claude"
+        real.mkdir()
+        real_md = real / "CLAUDE.md"
+        real_md.write_text("# Notes\nold line\n")
+        link = self.root / "CLAUDE.md"
+        link.symlink_to(real_md)
+        edits = templates.render({"type": "diff",
+                                  "payload": {"file": str(link),
+                                              "diff": "@@ -2,1 +2,1 @@\n-old line\n+new line\n"}},
+                                 self.root)
+        import os as _os
+        self.assertEqual(str(edits[0][0]), _os.path.realpath(str(link)))
+        self.assertEqual(edits[0][1], "# Notes\nnew line\n")
+
+    def test_diff_render_claude_md_symlink_to_other_file_rejected(self):
+        other = self.root / "not-claude.md"
+        other.write_text("something\n")
+        link = self.root / "CLAUDE.md"
+        link.symlink_to(other)
+        with self.assertRaises(ValueError):
+            templates.render({"type": "diff",
+                              "payload": {"file": str(link),
+                                          "diff": "@@ -1,1 +1,1 @@\n-something\n+else\n"}},
+                             self.root)
+
+    def test_diff_render_to_sanctioned_skill_file(self):
+        (self.root / "skills").mkdir()
+        skill = self.root / "skills" / "SKILL.md"
+        skill.write_text("---\nname: s\n---\nold\n")
+        edits = templates.render({"type": "diff",
+                                  "payload": {"file": str(skill),
+                                              "diff": "@@ -4,1 +4,1 @@\n-old\n+new\n"}},
+                                 self.root)
+        self.assertEqual(edits[0][1], "---\nname: s\n---\nnew\n")
+
+    def test_diff_render_arbitrary_path_rejected(self):
+        with self.assertRaises(ValueError):
+            templates.render({"type": "diff",
+                              "payload": {"file": "/tmp/x/notes.txt",
+                                          "diff": "@@ -1,1 +1,1 @@\n-a\n+b\n"}},
+                             self.root)
+        with self.assertRaises(ValueError):
+            templates.render({"type": "diff",
+                              "payload": {"file": "~/.zshrc",
+                                          "diff": "@@ -1,1 +1,1 @@\n-a\n+b\n"}},
+                             self.root)
+
+    def test_diff_render_context_mismatch_raises_valueerror(self):
+        (self.root / "skills").mkdir()
+        skill = self.root / "skills" / "SKILL.md"
+        skill.write_text("---\nname: s\n---\nold\n")
+        with self.assertRaises(ValueError):
+            templates.render({"type": "diff",
+                              "payload": {"file": str(skill),
+                                          "diff": "@@ -4,1 +4,1 @@\n-WRONG\n+new\n"}},
+                             self.root)
+
+    def test_diff_render_extra_root_existing_file_rejected(self):
+        with tempfile.TemporaryDirectory() as mem:
+            existing = pathlib.Path(mem) / "MEMORY.md"
+            existing.write_text("old\n")
+            with self.assertRaises(ValueError):   # memory create-only: no rewriting existing notes
+                templates.render({"type": "diff",
+                                  "payload": {"file": str(existing),
+                                              "diff": "@@ -1,1 +1,1 @@\n-old\n+new\n"}},
+                                 self.root, extra_roots=[mem])
+
+    def test_diff_render_extra_root_new_file_allowed(self):
+        with tempfile.TemporaryDirectory() as mem:
+            new_path = pathlib.Path(mem) / "new-note.md"
+            edits = templates.render({"type": "diff",
+                                      "payload": {"file": str(new_path),
+                                                  "diff": "@@ -0,0 +1,1 @@\n+hello\n"}},
+                                     self.root, extra_roots=[mem])
+            self.assertEqual(edits[0][1], "hello\n")
+
+    def test_diff_render_extra_root_claude_md_existing_rejected(self):
+        # naming an existing memory-root note "CLAUDE.md" must not bypass the
+        # memory create-only rule: extra-root containment is checked BEFORE the
+        # CLAUDE.md carve-out, not after.
+        with tempfile.TemporaryDirectory() as mem:
+            existing = pathlib.Path(mem) / "CLAUDE.md"
+            existing.write_text("old\n")
+            with self.assertRaises(ValueError):
+                templates.render({"type": "diff",
+                                  "payload": {"file": str(existing),
+                                              "diff": "@@ -1,1 +1,1 @@\n-old\n+new\n"}},
+                                 self.root, extra_roots=[mem])
+
+    def test_apply_unified_diff_malformed_hunk_header_raises_not_silently_skipped(self):
+        # a hunk header missing its trailing space fails the strict regex; it
+        # must not be silently skipped (dropping it and its now-orphaned body
+        # lines) while an earlier hunk still applies -- that would silently
+        # write a partially-patched file with no error.
+        original = "line1\nline2\nline3\nline4\nline5\n"
+        diff = "@@ -2,1 +2,1 @@\n-line2\n+line2mod\n@@ -4,1 +4,1@@\n-line4\n+line4mod\n"
+        with self.assertRaises(ValueError):
+            templates._apply_unified_diff(original, diff)
+
+    def test_apply_unified_diff_tolerates_file_header_preamble(self):
+        original = "line1\nline2\n"
+        diff = "--- a/file\n+++ b/file\n@@ -2,1 +2,1 @@\n-line2\n+line2mod\n"
+        result = templates._apply_unified_diff(original, diff)
+        self.assertEqual(result, "line1\nline2mod\n")
+
+    def test_smoke_check_claude_md_no_frontmatter_required(self):
+        claude_md = self.root / "CLAUDE.md"
+        claude_md.write_text("# just prose, no frontmatter\n")
+        errs = templates.smoke_check([claude_md], self.root)
+        self.assertEqual(errs, [])
+
     def test_smoke_check_catches_breakage(self):
         bad = self.root / "agents" / "bad.md"
         bad.write_text("---\nname: bad\nmodel: gpt-9\n---\n")

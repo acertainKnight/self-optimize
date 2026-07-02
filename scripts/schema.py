@@ -10,6 +10,9 @@ HARNESS = "claude-code"
 
 ACTION_TYPES_A = {"setting_change", "frontmatter_edit", "file_create", "file_replace"}
 ACTION_TYPES_B = {"diff", "manual"}
+# Applicability is a function of action TYPE, not tier: every type machine-applies
+# except manual (hooks/permissions/free-form hand-off, forever a human step).
+APPLICABLE_TYPES = ACTION_TYPES_A | {"diff"}
 CATEGORIES = {"bloat", "model-routing", "skill-edit", "new-skill", "claude-md",
               "hooks", "permissions", "settings", "waste",
               "skill-improve", "new-agent", "new-workflow", "new-plugin", "memory"}
@@ -85,6 +88,12 @@ def validate_rec(rec: dict) -> list[str]:
     if not isinstance(rec["evidence_refs"], list) or not rec["evidence_refs"]:
         errs.append("evidence_refs must be a non-empty list")
     return errs
+
+
+def is_applicable(action: dict) -> bool:
+    """True for any action type the machine may apply (snapshot/write/smoke/rollback):
+    every tier-A type plus diff. Only manual is a permanent human hand-off."""
+    return isinstance(action, dict) and action.get("type") in APPLICABLE_TYPES
 
 
 def parse_frontmatter(text: str) -> dict:

@@ -12,7 +12,7 @@ FINDINGS = [
      "impact": {"ordinal": "high"}, "risk": "med", "delta_tokens": None,
      "evidence_refs": ["usage:totals.sessions"],
      "metric": {"key": "none"},
-     "action": {"tier": "B", "type": "diff", "payload": {"file": "/x", "diff": "- old\n+ new"}}},
+     "action": {"tier": "B", "type": "manual", "payload": {"description": "trim CLAUDE.md by hand"}}},
 ]
 DROPPED = {"invalid": 1, "citations": 2, "guard": 0, "suppressed": []}
 VERIFY = [{"id": "ccc333", "title": "Old change", "metric": "correction_rate",
@@ -39,10 +39,47 @@ class TestRenderDashboard(unittest.TestCase):
         self.assertIn("&lt;img", html)
         self.assertNotIn("<img src=x", html)
 
-    def test_tier_a_card_has_toggle_tier_b_has_checkbox(self):
+    def test_applicable_card_has_toggle_manual_card_has_checkbox(self):
+        # applicability (incl. diff), not literal tier, decides the control: the
+        # tier-A setting_change gets the Apply/Reject/Amend/Skip toggle, the tier-B
+        # manual card gets the "select for assisted work" checkbox.
         html = dashboard.render_dashboard("r1", FINDINGS, DROPPED, [], [], USAGE, {})
         self.assertIn('name="choice-aaa111"', html)
         self.assertIn('id="assist-bbb222"', html)
+
+    def test_diff_card_gets_apply_toggle_not_assist_checkbox(self):
+        diff_rec = {"id": "ddd999", "title": "Trim CLAUDE.md diff", "category": "claude-md",
+                    "impact": {"ordinal": "high"}, "risk": "med", "delta_tokens": None,
+                    "evidence_refs": ["usage:totals.sessions"],
+                    "metric": {"key": "none"},
+                    "action": {"tier": "B", "type": "diff",
+                              "payload": {"file": "/x/CLAUDE.md", "diff": "-old\n+new"}}}
+        html = dashboard.render_dashboard("r1", [diff_rec], DROPPED, [], [], USAGE, {})
+        self.assertIn('name="choice-ddd999"', html)
+        self.assertNotIn('id="assist-ddd999"', html)
+
+    def test_data_island_and_js_route_diff_to_apply_manual_to_assist(self):
+        diff_rec = {"id": "diff1", "title": "d", "category": "claude-md",
+                    "impact": {"ordinal": "med"}, "risk": "low", "delta_tokens": None,
+                    "evidence_refs": ["usage:totals.sessions"], "metric": {"key": "none"},
+                    "action": {"tier": "B", "type": "diff",
+                              "payload": {"file": "/x", "diff": "-a\n+b"}}}
+        manual_rec = {"id": "manual1", "title": "m", "category": "hooks",
+                     "impact": {"ordinal": "med"}, "risk": "low", "delta_tokens": None,
+                     "evidence_refs": ["usage:totals.sessions"], "metric": {"key": "none"},
+                     "action": {"tier": "B", "type": "manual", "payload": {"description": "do it"}}}
+        html = dashboard.render_dashboard("r1", [diff_rec, manual_rec], DROPPED, [], [], USAGE, {})
+        island = json.loads(
+            html.split('<script type="application/json" id="data">', 1)[1].split("</script>", 1)[0])
+        by_id = {f["id"]: f for f in island["findings"]}
+        self.assertTrue(by_id["diff1"]["applicable"])
+        self.assertFalse(by_id["manual1"]["applicable"])
+        self.assertIn('name="choice-diff1"', html)
+        self.assertIn('id="assist-manual1"', html)
+        # JS partitions by applicability, not literal tier, for apply/reject/amend vs assist
+        self.assertIn("applicableIds", html)
+        self.assertIn("manualIds", html)
+        self.assertIn("f.applicable && f.interactive", html)
 
     def test_ledger_applied_rec_renders_badge_no_toggle(self):
         ledger_entries = {"aaa111": {"status": "applied"}}

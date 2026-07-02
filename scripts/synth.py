@@ -85,6 +85,26 @@ def _in_extra_root(f: str, extra_roots) -> bool:
     return False
 
 
+def _diff_bounded(f: str, data_root: Path, extra_roots=None) -> bool:
+    """Same containment templates.render enforces for a diff action: a
+    basename==CLAUDE.md path is bounded by its realpath's basename staying
+    CLAUDE.md; anything else must land under a sanctioned root (incl. extra
+    roots) AND end in .md. Checked here too so an out-of-bounds diff is
+    dropped at synth, before it can ever reach apply/decide."""
+    path = Path(str(f)).expanduser()
+    if _in_extra_root(f, extra_roots):
+        # memory create-only takes precedence over the CLAUDE.md carve-out
+        # below: naming an EXISTING memory note "CLAUDE.md" must not bypass the
+        # rule that blocks rewriting it (mirrors templates.render's ordering;
+        # a diff creating a new, not-yet-existing note is fine).
+        return not path.exists()
+    if os.path.basename(str(path)) == "CLAUDE.md":
+        return os.path.basename(os.path.realpath(str(path))) == "CLAUDE.md"
+    if not str(f).endswith(".md"):
+        return False
+    return any(_under(f, data_root, sub) for sub in ("skills", "agents", "workflows"))
+
+
 def guard(rec: dict, data_root: Path, extra_roots=None) -> bool:
     a = rec["action"]
     p = a.get("payload", {})
@@ -103,7 +123,11 @@ def guard(rec: dict, data_root: Path, extra_roots=None) -> bool:
             return True
         # extra roots (memory) are create-only: never rewrite existing notes
         return t == "file_create" and _in_extra_root(f, extra_roots)
-    return t in so_schema.ACTION_TYPES_B  # tier B is report-only: rendered, never executed
+    if t == "diff":
+        return _diff_bounded(p.get("file", ""), data_root, extra_roots)
+    if t == "manual":
+        return True  # report-only, never executed
+    return False
 
 
 def tier1_delta(rec: dict, ev: dict):

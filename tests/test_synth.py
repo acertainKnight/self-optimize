@@ -103,6 +103,74 @@ class TestSynth(unittest.TestCase):
         findings, dropped = synth.synthesize([rec], EV, {}, DATA, extra_roots=["/mem/notes"])
         self.assertEqual(len(findings), 1)
 
+    def test_guard_diff_bounded(self):
+        ok_claude_md = {"action": {"type": "diff", "tier": "B",
+                                   "payload": {"file": "/fakehome/.claude/CLAUDE.md",
+                                               "diff": "-a\n+b"}}}
+        ok_sanctioned = {"action": {"type": "diff", "tier": "B",
+                                    "payload": {"file": "/fakehome/.claude/skills/x/SKILL.md",
+                                                "diff": "-a\n+b"}}}
+        bad = {"action": {"type": "diff", "tier": "B",
+                          "payload": {"file": "/etc/passwd", "diff": "-a\n+b"}}}
+        manual = {"action": {"type": "manual", "tier": "B",
+                             "payload": {"description": "do this by hand"}}}
+        self.assertTrue(synth.guard(ok_claude_md, DATA))
+        self.assertTrue(synth.guard(ok_sanctioned, DATA))
+        self.assertFalse(synth.guard(bad, DATA))
+        self.assertTrue(synth.guard(manual, DATA))
+
+    def test_guard_diff_extra_root_and_traversal(self):
+        ok = {"action": {"type": "diff", "tier": "B",
+                         "payload": {"file": "/mem/notes/x.md", "diff": "-a\n+b"}}}
+        trav = {"action": {"type": "diff", "tier": "B",
+                           "payload": {"file": "/mem/notes/../../etc/x.md", "diff": "-a\n+b"}}}
+        self.assertFalse(synth.guard(ok, DATA))  # no extra_roots -> rejected
+        self.assertTrue(synth.guard(ok, DATA, extra_roots=["/mem/notes"]))
+        self.assertFalse(synth.guard(trav, DATA, extra_roots=["/mem/notes"]))
+
+    def test_guard_diff_extra_root_existing_file_rejected_new_file_allowed(self):
+        # memory is create-only (mirrors file_replace's rule): a diff against an
+        # EXISTING extra-root note is a rewrite of existing memory — the exact
+        # injection amplifier the create-only rule defends against. A diff
+        # against a not-yet-existing extra-root path is fine (== file_create).
+        import tempfile
+        with tempfile.TemporaryDirectory() as mem:
+            existing = pathlib.Path(mem) / "MEMORY.md"
+            existing.write_text("---\nfoo\n---\nbody\n")
+            rewrite = {"action": {"type": "diff", "tier": "B",
+                                  "payload": {"file": str(existing), "diff": "-a\n+b"}}}
+            create = {"action": {"type": "diff", "tier": "B",
+                                 "payload": {"file": str(pathlib.Path(mem) / "new.md"),
+                                             "diff": "-a\n+b"}}}
+            self.assertFalse(synth.guard(rewrite, DATA, extra_roots=[mem]))
+            self.assertTrue(synth.guard(create, DATA, extra_roots=[mem]))
+
+    def test_guard_diff_extra_root_claude_md_existing_rejected(self):
+        # naming an existing memory-root note "CLAUDE.md" must not bypass the
+        # memory create-only rule: extra-root containment is checked BEFORE the
+        # CLAUDE.md carve-out, not after.
+        import tempfile
+        with tempfile.TemporaryDirectory() as mem:
+            existing = pathlib.Path(mem) / "CLAUDE.md"
+            existing.write_text("body\n")
+            rec = {"action": {"type": "diff", "tier": "B",
+                              "payload": {"file": str(existing), "diff": "-a\n+b"}}}
+            self.assertFalse(synth.guard(rec, DATA, extra_roots=[mem]))
+
+    def test_guard_diff_non_md_rejected(self):
+        rec = {"action": {"type": "diff", "tier": "B",
+                          "payload": {"file": "/fakehome/.claude/skills/x/helper.py",
+                                      "diff": "-a\n+b"}}}
+        self.assertFalse(synth.guard(rec, DATA))
+
+    def test_synthesize_drops_out_of_bounds_diff(self):
+        rec = bloat_rec()
+        rec["action"] = {"harness": "claude-code", "tier": "B", "type": "diff",
+                         "payload": {"file": "/etc/passwd", "diff": "-a\n+b"}}
+        findings, dropped = synth.synthesize([rec], EV, {}, DATA)
+        self.assertEqual(findings, [])
+        self.assertEqual(dropped["guard"], 1)
+
     def test_check_citation_new_kinds(self):
         ev = dict(EV)
         ev["inventory"] = dict(EV["inventory"], available_plugins=[
