@@ -55,6 +55,22 @@ class TestTemplates(unittest.TestCase):
                               "payload": {"path": str(self.root) + "/agents-evil/x.md",
                                           "content": "c"}}, self.root)
 
+    def test_render_raises_valueerror_not_typeerror_on_scalar_path(self):
+        with self.assertRaises(ValueError):
+            templates.render({"type": "setting_change",
+                              "payload": {"key_path": ["model", "x"], "value": "y"}}, self.root)
+
+    def test_smoke_check_reports_unreadable_md_instead_of_raising(self):
+        errs = templates.smoke_check([self.root / "agents" / "ghost.md"], self.root)
+        self.assertEqual(len(errs), 1)
+        self.assertIn("unreadable", errs[0])
+
+    def test_frontmatter_edit_missing_file_raises_valueerror(self):
+        with self.assertRaises(ValueError):
+            templates.render({"type": "frontmatter_edit",
+                              "payload": {"file": str(self.root / "agents" / "ghost.md"),
+                                          "key": "model", "value": "haiku"}}, self.root)
+
     def test_smoke_check_catches_breakage(self):
         bad = self.root / "agents" / "bad.md"
         bad.write_text("---\nname: bad\nmodel: gpt-9\n---\n")

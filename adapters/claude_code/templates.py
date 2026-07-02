@@ -43,12 +43,19 @@ def render(action: dict, data_root: Path) -> list:
         obj = json.loads(f.read_text()) if f.exists() else {}
         node = obj
         for k in kp[:-1]:
-            node = node.setdefault(k, {})
+            nxt = node.get(k)
+            if nxt is None:
+                nxt = node[k] = {}
+            elif not isinstance(nxt, dict):
+                raise ValueError(f"settings path collides with non-object at '{k}'")
+            node = nxt
         node[kp[-1]] = p["value"]
         return [(f, json.dumps(obj, indent=2) + "\n")]
     if t == "frontmatter_edit":
         f = Path(p["file"]).expanduser()
         _require_user_md(f, data_root)
+        if not f.exists():
+            raise ValueError(f"no such file: {f}")
         text = f.read_text()
         end = text.find("\n---", 3)
         if not text.startswith("---") or end == -1:
@@ -77,7 +84,12 @@ def smoke_check(paths: list, data_root: Path) -> list:
             except Exception as e:  # noqa: BLE001 - any parse failure must restore
                 errs.append(f"{p}: invalid JSON ({e})")
         elif p.suffix == ".md":
-            fm = so_schema.parse_frontmatter(p.read_text())
+            try:
+                text = p.read_text()
+            except OSError as e:
+                errs.append(f"{p}: unreadable ({e})")
+                continue
+            fm = so_schema.parse_frontmatter(text)
             if not fm:
                 errs.append(f"{p}: missing or unparseable frontmatter")
             elif "model" in fm and not _model_ok(fm["model"]):
