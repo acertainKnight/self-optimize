@@ -4,6 +4,7 @@ payloads (defense-in-depth vs prompt injection via transcripts), compute determi
 Tier-1 token deltas, dedup against the ledger, rank."""
 import argparse
 import json
+import os
 from pathlib import Path
 
 import ledger as ledger_mod
@@ -56,7 +57,12 @@ def check_citation(ref: str, ev: dict) -> bool:
 
 
 def _under(f: str, data_root: Path, sub: str) -> bool:
-    return str(Path(f).expanduser()).startswith(str(Path(data_root) / sub))
+    # ponytail: lexical normpath, not resolve() — resolve() follows symlinks and
+    # would reject legitimately symlinked skills dirs; normpath collapses ".."
+    # without touching the filesystem. Separator suffix blocks sibling-dir prefixes.
+    target = os.path.normpath(str(Path(f).expanduser()))
+    base = os.path.normpath(str(Path(data_root) / sub))
+    return target == base or target.startswith(base + os.sep)
 
 
 def guard(rec: dict, data_root: Path) -> bool:

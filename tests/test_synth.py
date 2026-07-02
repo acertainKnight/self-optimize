@@ -58,6 +58,16 @@ class TestSynth(unittest.TestCase):
         self.assertTrue(synth.guard(ok, DATA))
         self.assertFalse(synth.guard(bad, DATA))
 
+    def test_guard_rejects_sibling_and_traversal(self):
+        sib = {"action": {"type": "file_create", "tier": "A",
+                          "payload": {"path": "/fakehome/.claude/skills-evil/x.md",
+                                      "content": "c"}}}
+        trav = {"action": {"type": "file_create", "tier": "A",
+                           "payload": {"path": "/fakehome/.claude/skills/../../../etc/x.md",
+                                       "content": "c"}}}
+        self.assertFalse(synth.guard(sib, DATA))
+        self.assertFalse(synth.guard(trav, DATA))
+
     def test_fenced_output_parses(self):
         import json, tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
