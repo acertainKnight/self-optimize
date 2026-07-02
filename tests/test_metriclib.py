@@ -30,6 +30,14 @@ class TestMetrics(unittest.TestCase):
         v, n = metriclib.compute_metric({"key": "none"}, S, INV)
         self.assertEqual((v, n), (None, 0))
 
+    def test_inventory_metrics_are_inconclusive_without_inventory(self):
+        # missing inventory.json must read as "no measurement", not "zero unused
+        # surfaces" — a false zero would let a positive baseline look verified
+        v, n = metriclib.compute_metric({"key": "unused_surface_count"}, S, None)
+        self.assertEqual((v, n), (None, 1))
+        v, n = metriclib.compute_metric({"key": "base_context_est"}, S, None)
+        self.assertEqual((v, n), (None, 1))
+
     def test_model_output_tokens_malformed_scope_is_inconclusive(self):
         v, n = metriclib.compute_metric(
             {"key": "model_output_tokens", "scope": "global"}, S, None)

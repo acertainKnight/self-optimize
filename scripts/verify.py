@@ -40,7 +40,9 @@ def verify_entries(entries: dict, sessions: list, inventory, cfg: dict) -> list:
                "direction": m.get("direction"),
                "baseline": base, "value": val, "n": n,
                "verdict": "inconclusive", "rel_change": None, "p_value": None}
-        if n >= cfg["verify"]["min_sessions"] and val is not None and base not in (None, 0):
+        floor_ok = (n >= cfg["verify"]["min_sessions"]
+                    or m.get("key") in ("base_context_est", "unused_surface_count"))
+        if floor_ok and val is not None and base not in (None, 0):
             rel = (val - base) / abs(base)
             row["rel_change"] = rel
             t = cfg["verify"]["min_rel_change"]

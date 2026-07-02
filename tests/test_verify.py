@@ -36,6 +36,30 @@ class TestVerify(unittest.TestCase):
         e2 = entry(2.0); e2["rec"]["metric"] = {"key": "none"}
         self.assertEqual(verify.verify_entries({"a": e2}, sessions([0, 0, 0]), None, CFG), [])
 
+    def test_inventory_point_metric_bypasses_session_floor(self):
+        e = entry(88911.0)
+        e["rec"]["metric"] = {"key": "base_context_est", "direction": "down", "scope": "global"}
+        inventory = {"base_context_est": 40989, "unused": []}
+        rows = verify.verify_entries({"a": e}, sessions([0]), inventory, CFG)
+        self.assertEqual(rows[0]["verdict"], "verified")   # n=1, but floor is exempt
+        self.assertIsNone(rows[0]["p_value"])               # point measurement, no distribution
+        self.assertAlmostEqual(rows[0]["rel_change"], -0.539, places=3)
+
+        e2 = entry(88911.0)
+        e2["rec"]["metric"] = {"key": "base_context_est", "direction": "down", "scope": "global"}
+        inventory_no_move = {"base_context_est": 88911, "unused": []}
+        rows = verify.verify_entries({"a": e2}, sessions([0]), inventory_no_move, CFG)
+        self.assertEqual(rows[0]["verdict"], "inconclusive")   # no movement beyond threshold
+
+    def test_missing_inventory_does_not_false_verify(self):
+        # no evidence/inventory.json this run (inventory=None) must not read as
+        # "unused surfaces dropped to zero" — that would falsely verify any
+        # positive baseline
+        e = entry(12.0)
+        e["rec"]["metric"] = {"key": "unused_surface_count", "direction": "down", "scope": "global"}
+        rows = verify.verify_entries({"a": e}, sessions([0]), None, CFG)
+        self.assertEqual(rows[0]["verdict"], "inconclusive")
+
     def test_significant_distributions_verify(self):
         e = entry(10.0)
         e["baseline"]["samples"] = [10.0, 10.0, 10.0, 10.0]

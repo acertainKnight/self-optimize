@@ -14,7 +14,9 @@ def compute_metric(metric: dict, sessions: list, inventory: dict | None = None,
     if key == "base_context_est":
         return (inventory or {}).get("base_context_est"), 1
     if key == "unused_surface_count":
-        return len((inventory or {}).get("unused", [])), 1
+        if inventory is None:
+            return None, 1
+        return len(inventory.get("unused", [])), 1
 
     rows = [s for s in sessions if not after_ts or (s.get("started_at") or "") > after_ts]
     n = len(rows)
