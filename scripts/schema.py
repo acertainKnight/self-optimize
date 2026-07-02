@@ -40,8 +40,12 @@ def validate_rec(rec: dict) -> list[str]:
         errs.append("action must be an object")
     if not isinstance(m, dict):
         errs.append("metric must be an object")
+    if not isinstance(rec["impact"], dict):
+        errs.append("impact must be an object")
     if errs:
         return errs
+    if rec["impact"].get("ordinal") not in ("high", "med", "low"):
+        errs.append("impact.ordinal must be high|med|low")
     t = a.get("type")
     if t not in ACTION_TYPES_A | ACTION_TYPES_B:
         errs.append(f"bad action type: {t}")

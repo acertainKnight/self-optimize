@@ -41,6 +41,12 @@ class TestSchema(unittest.TestCase):
         b["action"]["payload"]["value"] = "name-only"
         self.assertNotEqual(schema.rec_id(a), schema.rec_id(b))
 
+    def test_non_dict_impact_and_bad_ordinal_return_errors(self):
+        r = good_rec(); r["impact"] = "high"
+        self.assertIn("impact must be an object", schema.validate_rec(r))
+        r2 = good_rec(); r2["impact"] = {"ordinal": "huge"}
+        self.assertTrue(any("ordinal" in e for e in schema.validate_rec(r2)))
+
     def test_frontmatter(self):
         text = "---\nname: foo\nmodel: haiku\n---\n# body\n"
         fm = schema.parse_frontmatter(text)

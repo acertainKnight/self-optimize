@@ -25,6 +25,9 @@ class TestPack(unittest.TestCase):
         self.assertEqual(pack["usage"]["corrections"]["total"], 2)
         self.assertEqual(pack["activation"]["items"]["skill:tdd"]["count"], 4)
         self.assertEqual(len(pack["samples"]), 2)
+        self.assertEqual(pack["usage"]["waste"]["top_duplicate_read_paths"][0],
+                         ("/tmp/projA/parser.py", 4))
+        self.assertNotIn("_dup_read_paths", pack["sessions"][0])
         # exclude glob drops projB
         pack2 = collect.collect_corpus(self.root, None, ["*"], ["*projB*"], collect.DEFAULT_CORRECTION_RE, CAPS)
         self.assertEqual(pack2["usage"]["totals"]["sessions"], 1)

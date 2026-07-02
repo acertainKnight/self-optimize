@@ -146,6 +146,7 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
                 })
 
     s["duplicate_reads"] = sum(c - 1 for c in read_paths.values() if c > 1)
+    s["_dup_read_paths"] = {k: c for k, c in read_paths.items() if c > 1}
     s["repeated_calls"] = sum(c - 2 for c in call_keys.values() if c > 2)
     s["activation"] = dict(s["activation"])
     return s
@@ -161,7 +162,7 @@ import schema as so_schema
 
 def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, caps) -> dict:
     counters = {"skipped_lines": 0, "files": 0}
-    sessions, act, samples = [], {}, []
+    sessions, act, samples, dup_paths = [], {}, [], {}
     proj_root = Path(data_root) / "projects"
     for f in sorted(proj_root.glob("*/*.jsonl")) if proj_root.exists() else []:
         project = f.parent.name
@@ -179,6 +180,8 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
             e["last_used"] = max(e["last_used"] or "", s["ended_at"] or "")
             if project not in e["projects"]:
                 e["projects"].append(project)
+        for k, c in s.pop("_dup_read_paths", {}).items():
+            dup_paths[k] = dup_paths.get(k, 0) + c
         corrs = s.pop("corrections")
         for c in corrs:
             samples.append({"session": s["id"], "project": project, "ts": c["ts"],
@@ -190,7 +193,7 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
 
     samples = _cap_samples(samples, sessions, caps)
     n = len(sessions)
-    per_project, per_model, dup_paths = {}, {}, {}
+    per_project, per_model = {}, {}
     tot = {"sessions": n, "turns": 0, "input_tokens": 0, "output_tokens": 0,
            "cache_read": 0, "cache_write": 0}
     waste = {"duplicate_reads_total": 0, "repeated_calls_total": 0, "permission_stalls_total": 0}
@@ -211,7 +214,8 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
         corr_total += s["corrections_count"]
     usage = {"window": {"since": since_iso, "until": max((s["ended_at"] or "" for s in sessions), default=None)},
              "totals": tot, "per_project": per_project, "per_model": per_model,
-             "waste": {**waste, "top_duplicate_read_paths": []},
+             "waste": {**waste, "top_duplicate_read_paths":
+                       sorted(dup_paths.items(), key=lambda kv: -kv[1])[:10]},
              "corrections": {"total": corr_total,
                              "rate_per_session": (corr_total / n) if n else 0.0},
              "parse": {**counters, "redactions": sum(s.get("redactions", 0) for s in sessions)}}

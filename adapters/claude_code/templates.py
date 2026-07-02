@@ -61,6 +61,8 @@ def render(action: dict, data_root: Path) -> list:
         if not text.startswith("---") or end == -1:
             raise ValueError(f"no frontmatter in {f}")
         head, rest = text[:end], text[end:]
+        if any(c in str(p["key"]) or c in str(p["value"]) for c in ("\n", "\r")):
+            raise ValueError("frontmatter key/value must be single-line")
         line = f"{p['key']}: {p['value']}"
         pat = re.compile(rf"^{re.escape(p['key'])}:.*$", re.M)
         head = pat.sub(line, head) if pat.search(head) else head + "\n" + line

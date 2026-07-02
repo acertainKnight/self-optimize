@@ -14,6 +14,12 @@ class TestLedger(unittest.TestCase):
             self.assertEqual(entries["abc"]["status"], "rejected")
             self.assertTrue(entries["abc"]["ts"])
 
+    def test_load_skips_idless_and_non_dict_lines(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "l.jsonl"
+            p.write_text('42\n{"no_id": true}\n{"id": "a", "status": "proposed"}\n')
+            self.assertEqual(list(ledger.load(p)), ["a"])
+
     def test_suppression_rules(self):
         entries = {
             "ap1": {"status": "applied", "evidence_hash": "x"},

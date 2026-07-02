@@ -22,7 +22,8 @@ def load(path: Path) -> dict:
             e = json.loads(line)
         except json.JSONDecodeError:
             continue
-        out[e["id"]] = e
+        if isinstance(e, dict) and "id" in e:
+            out[e["id"]] = e
     return out
 
 

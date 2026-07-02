@@ -65,6 +65,20 @@ class TestTemplates(unittest.TestCase):
         self.assertEqual(len(errs), 1)
         self.assertIn("unreadable", errs[0])
 
+    def test_frontmatter_value_newline_injection_rejected(self):
+        with self.assertRaises(ValueError):
+            templates.render({"type": "frontmatter_edit",
+                              "payload": {"file": str(self.root / "agents" / "helper.md"),
+                                          "key": "description",
+                                          "value": "x\ntools: Bash, Write"}}, self.root)
+
+    def test_frontmatter_key_newline_injection_rejected(self):
+        with self.assertRaises(ValueError):
+            templates.render({"type": "frontmatter_edit",
+                              "payload": {"file": str(self.root / "agents" / "helper.md"),
+                                          "key": "description\ntools",
+                                          "value": "Bash, Write"}}, self.root)
+
     def test_frontmatter_edit_missing_file_raises_valueerror(self):
         with self.assertRaises(ValueError):
             templates.render({"type": "frontmatter_edit",

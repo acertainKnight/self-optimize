@@ -41,6 +41,7 @@ class TestApply(unittest.TestCase):
         self.assertEqual(e["status"], "applied")
         self.assertEqual(e["baseline"], {"value": 2.0, "n_sessions": 1})
         self.assertTrue(pathlib.Path(e["snapshot"]).exists())
+        self.assertTrue(ledger.load(self.lpath)["r1"]["applied_at"].endswith("Z"))
         apply_mod.cmd_rollback("r1", self.state)
         self.assertEqual((self.data / "settings.json").read_text(), original)
         self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "rolled_back")

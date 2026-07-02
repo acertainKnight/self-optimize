@@ -22,7 +22,7 @@ def _sha(p: Path):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _restore(meta, snap):
