@@ -1,4 +1,4 @@
-import sys, pathlib, unittest
+import json, sys, pathlib, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 import collect
 
@@ -48,6 +48,27 @@ class TestParseSession(unittest.TestCase):
         os.unlink(path)
         self.assertEqual(counters["skipped_lines"], 3)
         self.assertEqual(s["turns"], 1)
+
+    def test_namespaced_skill_and_agent_activations_normalize_to_bare(self):
+        import os, tempfile
+        line = json.dumps({
+            "type": "assistant", "uuid": "a1", "timestamp": "2026-06-20T10:00:00Z",
+            "attributionSkill": "remember:remember",
+            "message": {"role": "assistant", "model": "m", "usage": {"output_tokens": 1},
+                        "content": [
+                            {"type": "tool_use", "id": "t1", "name": "Skill",
+                             "input": {"skill": "superpowers:writing-plans"}},
+                            {"type": "tool_use", "id": "t2", "name": "Agent",
+                             "input": {"subagent_type": "pr-review-toolkit:code-reviewer"}}]}})
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+            f.write(line + "\n")
+            path = f.name
+        counters = {"skipped_lines": 0}
+        s = collect.parse_session(pathlib.Path(path), "p", collect.DEFAULT_CORRECTION_RE, counters)
+        os.unlink(path)
+        self.assertEqual(s["activation"]["skill:writing-plans"], 1)
+        self.assertEqual(s["activation"]["skill:remember"], 1)
+        self.assertEqual(s["activation"]["agent:code-reviewer"], 1)
 
 
 if __name__ == "__main__":

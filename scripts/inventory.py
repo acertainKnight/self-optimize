@@ -171,7 +171,9 @@ def main(argv=None):
     a = ap.parse_args(argv)
     data_root, state = so_config.resolve(a.data_root, a.state)
     inv = build_inventory(data_root, Path(a.out))
-    (Path(a.out) / "inventory.json").write_text(json.dumps(inv, indent=1))
+    out_file = Path(a.out) / "inventory.json"
+    out_file.write_text(json.dumps(inv, indent=1))
+    out_file.chmod(0o600)
     update_last_metrics(state, base_context_est=inv["base_context_est"],
                         unused_surface_count=len(inv["unused"]))
     print(f"skills={len(inv['skills'])} agents={len(inv['agents'])} mcp={len(inv['mcp_servers'])} "

@@ -49,6 +49,11 @@ def _args_hash(inp) -> str:
     return hashlib.sha256(json.dumps(inp, sort_keys=True, default=str).encode()).hexdigest()[:8]
 
 
+def _bare(name) -> str:
+    """Plugin items are invoked namespaced ('plugin:skill'); inventory ids are bare."""
+    return str(name).split(":")[-1]
+
+
 def parse_session(path: Path, project: str, correction_re, counters: dict) -> dict:
     s = {"id": Path(path).stem, "project": project, "cwd": None,
          "harness_version": None, "started_at": None, "ended_at": None, "turns": 0,
@@ -67,8 +72,9 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
             s["ended_at"] = max(s["ended_at"] or ts, ts)
         s["harness_version"] = s["harness_version"] or rec.get("version")
         s["cwd"] = s["cwd"] or rec.get("cwd")
-        for attr, prefix in (("attributionSkill", "skill"), ("attributionPlugin", "plugin"),
-                             ("attributionMcpServer", "mcp")):
+        if rec.get("attributionSkill"):
+            s["activation"][f"skill:{_bare(str(rec['attributionSkill']))}"] += 1
+        for attr, prefix in (("attributionPlugin", "plugin"), ("attributionMcpServer", "mcp")):
             if rec.get(attr):
                 s["activation"][f"{prefix}:{rec[attr]}"] += 1
         if rtype not in ("user", "assistant"):
@@ -101,9 +107,9 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
                 if name == "Read" and inp.get("file_path"):
                     read_paths[inp["file_path"]] += 1
                 if name == "Skill" and inp.get("skill"):
-                    s["activation"][f"skill:{inp['skill']}"] += 1
+                    s["activation"][f"skill:{_bare(inp['skill'])}"] += 1
                 if name in ("Agent", "Task") and inp.get("subagent_type"):
-                    s["activation"][f"agent:{inp['subagent_type']}"] += 1
+                    s["activation"][f"agent:{_bare(inp['subagent_type'])}"] += 1
                 if name.startswith("mcp__"):
                     s["activation"][f"mcp_tool:{name}"] += 1
                     parts = name.split("__")

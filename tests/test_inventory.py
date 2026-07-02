@@ -85,6 +85,17 @@ class TestInventory(unittest.TestCase):
             inv = inventory.build_inventory(root, None)
             self.assertEqual(inv["plugins"], [])
 
+    def test_main_writes_inventory_with_600_perms(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            ev = pathlib.Path(d) / "ev"
+            ev.mkdir()
+            make_fake_claude(root)
+            inventory.main(["--data-root", str(root), "--state", str(pathlib.Path(d) / "st"),
+                            "--out", str(ev)])
+            mode = (ev / "inventory.json").stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600)
+
 
 if __name__ == "__main__":
     unittest.main()
