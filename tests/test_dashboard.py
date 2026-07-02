@@ -59,6 +59,12 @@ class TestRenderDashboard(unittest.TestCase):
         for bad in ("http://", "https://", "fetch("):
             self.assertNotIn(bad, html)
 
+    def test_copy_command_sanitizes_shell_risky_reason(self):
+        # copy-to-shell path must strip backticks/$/quotes/backslash from the reason
+        html = dashboard.render_dashboard("r1", FINDINGS, DROPPED, [], [], USAGE, {})
+        self.assertIn(r"replace(/[`$" + '"' + r"\\]/g, ' ')", html)
+        self.assertIn("sanitized for shell safety", html)
+
     def test_outcomes_table_rendered_when_verify_rows_present(self):
         html = dashboard.render_dashboard("r1", [], DROPPED, VERIFY, [], USAGE, {})
         self.assertIn("Applied changes: outcomes", html)

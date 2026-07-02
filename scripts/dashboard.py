@@ -340,9 +340,16 @@ _JS = """
     if (rejectEntries.some(function (r) { return !r.reason; })) return;
     var lines = [];
     if (applyIds.length) lines.push('/self-optimize apply ' + applyIds.join(','));
+    var sanitized = false;
     rejectEntries.forEach(function (r) {
-      lines.push('/self-optimize reject ' + r.id + ' "' + r.reason.replace(/"/g, '\\\\"') + '"');
+      // reason is free text going into a shell-shaped --reason "..."; neutralize
+      // backticks / $ / quotes / backslash so a reason can't inject shell. The
+      // downloaded decisions.json keeps the full reason; only this copy path strips.
+      var safe = r.reason.replace(/[`$"\\\\]/g, ' ').trim();
+      if (safe !== r.reason.trim()) sanitized = true;
+      lines.push('/self-optimize reject ' + r.id + ' "' + safe + '"');
     });
+    if (sanitized) lines.push('# note: reject reason(s) sanitized for shell safety; decisions.json keeps the full text');
     navigator.clipboard.writeText(lines.join('\\n'));
   });
 

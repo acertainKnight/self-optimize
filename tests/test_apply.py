@@ -166,6 +166,10 @@ class TestDecide(unittest.TestCase):
         (self.ev / "sessions.json").write_text(json.dumps(
             {"sessions": [{"started_at": "2026-06-01", "corrections_count": 2,
                            "input_tokens": 1, "output_tokens": 1}]}))
+        # only r1/r2/r3 belong to THIS run's findings; r4 is an unrelated open-backlog
+        # entry that a stale/planted decisions file must NOT be able to reach
+        (self.ev / "findings.json").write_text(json.dumps(
+            {"findings": [{"id": "r1"}, {"id": "r2"}, {"id": "r3"}], "dropped": {}}))
         self.lpath = self.state / "state" / "ledger.jsonl"
         ledger.append(self.lpath, {"id": "r1", "status": "proposed", "rec": setting_rec(),
                                    "evidence_hash": "e1"})
@@ -173,6 +177,8 @@ class TestDecide(unittest.TestCase):
                                    "evidence_hash": "e2"})
         ledger.append(self.lpath, {"id": "r3", "status": "proposed", "rec": assist_rec(),
                                    "evidence_hash": "e3"})
+        ledger.append(self.lpath, {"id": "r4", "status": "proposed", "rec": setting_rec(),
+                                   "evidence_hash": "e4"})
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -198,6 +204,23 @@ class TestDecide(unittest.TestCase):
                                              "payload_type": "diff"}])
         # tier-B payload never executed: no file at the diff's target path
         self.assertFalse(pathlib.Path("/x").exists())
+
+    def test_id_not_in_run_findings_refused(self):
+        # r4 is proposed tier-A in the ledger but not in this run's findings.json:
+        # a decisions file must not be able to reach open-backlog ids
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        dfile.write_text(json.dumps(self._decisions(apply=["r4"], reject=[], assist=[])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["r4"]["status"], "proposed")
+        self.assertNotIn("r4", result.get("applied", []))
+
+    def test_missing_findings_refuses_whole_decide(self):
+        (self.ev / "findings.json").unlink()
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        dfile.write_text(json.dumps(self._decisions()))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(result, {})
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
 
     def test_run_id_mismatch_refuses_file(self):
         dfile = self.downloads / "self-optimize-decisions-other.json"

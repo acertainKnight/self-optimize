@@ -194,13 +194,32 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
         print(f"{dfile}: decisions are for run {run_id!r} but the evidence run is "
               f"{ev_run!r} — regenerate the dashboard for the current run and re-download")
         return {}
+    # authorization set: only ids THIS run actually proposed. The run_id string match
+    # alone can't stop a file for the right run from naming any open-backlog id, so we
+    # scope every apply/reject/assist to findings.json. No findings = nothing to
+    # authorize against = invalid decide.
+    fpath = Path(evidence) / "findings.json"
+    if not fpath.exists():
+        print(f"{dfile}: no findings.json in the evidence run {ev_run!r} — cannot "
+              f"authorize any decision; run a full /self-optimize first")
+        return {}
+    run_ids = {f["id"] for f in json.loads(fpath.read_text()).get("findings", [])
+               if isinstance(f, dict) and isinstance(f.get("id"), str)}
     apply_ids = [i for i in (data.get("apply") or []) if isinstance(i, str)]
     reject_items = [r for r in (data.get("reject") or [])
                     if isinstance(r, dict) and isinstance(r.get("id"), str)
                     and isinstance(r.get("reason"), str)]
     assist_ids = [i for i in (data.get("assist") or []) if isinstance(i, str)]
+    refused = ([i for i in apply_ids if i not in run_ids]
+               + [r["id"] for r in reject_items if r["id"] not in run_ids]
+               + [i for i in assist_ids if i not in run_ids])
+    apply_ids = [i for i in apply_ids if i in run_ids]
+    reject_items = [r for r in reject_items if r["id"] in run_ids]
+    assist_ids = [i for i in assist_ids if i in run_ids]
     print(f"decisions: {dfile} (run {run_id}: {len(apply_ids)} apply, "
           f"{len(reject_items)} reject, {len(assist_ids)} assist)")
+    if refused:
+        print(f"REFUSED (not part of run {ev_run}): {', '.join(sorted(set(refused)))}")
     if apply_ids:
         cmd_apply(apply_ids, state, data_root, evidence)
     for r in reject_items:
@@ -216,7 +235,8 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
         print("ASSISTED WORK SELECTED (tier B — complete these with the user):")
         for item in assist:
             print(f"- {item['id']}: {item['title']} [{item['payload_type']}]")
-    return {"applied": applied, "rejected": [r["id"] for r in reject_items], "assist": assist}
+    return {"applied": applied, "rejected": [r["id"] for r in reject_items],
+            "assist": assist, "refused": sorted(set(refused))}
 
 
 def main(argv=None):

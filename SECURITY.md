@@ -20,6 +20,15 @@ Single-user, per-machine, no telemetry. Trust boundaries and mitigations:
 4. **Artifacts at rest.** Evidence packs are chmod 600 and pruned by `retain_runs`.
    Reports contain redacted excerpts — the default report_dir is local; pointing it
    at a synced folder is your choice.
+5. **Decisions file → `decide`.** The dashboard's downloaded `decisions.json` is read
+   from `~/Downloads` (semi-trusted — any browser download can land a matching file
+   there). Mitigations: the file's `run_id` must match the evidence run being decided
+   against; every apply/reject/assist id is scoped to that run's `findings.json` (ids
+   outside it are refused, not just the whole file), so a decisions file can only route
+   ids the run already vetted — never arbitrary open-backlog entries; applies still go
+   through the normal tier-A template re-validation, snapshot, and smoke check; reject
+   reasons are redaction-scrubbed before they can reach `constraints.json`, and the
+   dashboard's copy-to-shell path strips shell metacharacters from reason text.
 
 Residual risks, stated honestly: regex+entropy redaction is not perfect; injection
 framing is mitigation, not guarantee; path guards normalize lexically and deliberately
@@ -29,4 +38,6 @@ residual symlink exposure is only human-applied tier-B edits, which you review b
 hand anyway; `enabledPlugins` disable semantics are only partially documented by Anthropic
 (verified against local behavior). The transcript format is explicitly not
 stability-guaranteed — collectors skip what they cannot parse and report the skip
-count.
+count. A `decisions.json` for the current run can still route any already-vetted,
+in-run rec (that is the point of the file), and reject-reason handling is
+prompt-injection-mitigated, not guaranteed.
