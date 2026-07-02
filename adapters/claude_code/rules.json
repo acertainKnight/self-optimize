@@ -1,0 +1,18 @@
+{
+  "catalog_version": "2026-07-01",
+  "rules": [
+    {"id": "mcp-schema-deferral", "status": "verified", "claim": "MCP tool schemas load on demand (names ~120 tokens up front); keep tool-search deferral on for large MCP surfaces", "sources": ["https://code.claude.com/docs/en/context-window"], "feeds": ["config-auditor"]},
+    {"id": "subagent-isolation", "status": "verified", "claim": "Subagents return short summaries; delegate file-heavy reads and verification to keep the main context small", "sources": ["https://www.anthropic.com/engineering/claude-code-best-practices"], "feeds": ["config-auditor", "transcript-miner"]},
+    {"id": "subagent-model-routing", "status": "verified", "claim": "Per-agent model via frontmatter; resolution: CLAUDE_CODE_SUBAGENT_MODEL env > per-invocation > frontmatter > main model; a user-level agents/<name>.md in the instance's config dir shadows a plugin agent of the same name (managed > CLI > project > user > plugin)", "sources": ["https://code.claude.com/docs/en/sub-agents"], "feeds": ["config-auditor"]},
+    {"id": "skill-overrides", "status": "verified", "claim": "settings.json skillOverrides accepts on|name-only|user-invocable-only|off per skill — the durable way to trim plugin skills (survives plugin updates)", "sources": ["https://code.claude.com/docs/en/skills"], "feeds": ["config-auditor"]},
+    {"id": "claude-md-hygiene", "status": "verified", "claim": "CLAUDE.md loads every session and bloat degrades adherence; keep broadly-applicable rules, move conditional knowledge into skills", "sources": ["https://www.anthropic.com/engineering/claude-code-best-practices"], "feeds": ["config-auditor"]},
+    {"id": "disable-model-invocation", "status": "verified", "claim": "disable-model-invocation: true removes a skill's model-triggered context cost while keeping /invocation", "sources": ["https://code.claude.com/docs/en/skills"], "feeds": ["config-auditor"]},
+    {"id": "prompt-caching", "status": "verified", "claim": "Cache economics: 0.1x read, 1.25x 5-min write, 2.0x 1-hr write; per-model minimums (Opus 4.8/Sonnet 5 = 1024, Fable 5 = 512, Haiku 4.5 = 4096) silently skip below minimum", "sources": ["https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching"], "feeds": ["config-auditor"]},
+    {"id": "context-rot", "status": "verified", "claim": "Recall degrades as context grows; prefer the smallest high-signal token set via just-in-time loading", "sources": ["https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents"], "feeds": ["config-auditor", "transcript-miner"]},
+    {"id": "tool-search-reduction", "status": "unverified", "claim": "Tool Search Tool ~85% token reduction (~77k -> ~8.7k) on large tool surfaces", "sources": [], "feeds": ["config-auditor"]},
+    {"id": "ptc-reduction", "status": "unverified", "claim": "Programmatic tool calling ~37% context reduction in Anthropic's example (43.6k -> 27.3k)", "sources": [], "feeds": ["config-auditor"]},
+    {"id": "mcp-upfront-cost", "status": "unverified", "claim": "A 5-server MCP setup costs ~55k tokens up front without deferral", "sources": [], "feeds": ["config-auditor"]},
+    {"id": "haiku-cost-ratio", "status": "unverified", "claim": "Haiku ~15x cheaper than Opus; simple subagent tasks reportedly equivalent on Haiku", "sources": [], "feeds": ["config-auditor"]},
+    {"id": "enable-tool-search-env", "status": "unverified", "claim": "ENABLE_TOOL_SEARCH is undocumented in official docs as of 2026-07-01; never recommend changing it firmly", "sources": [], "feeds": ["config-auditor"]}
+  ]
+}
