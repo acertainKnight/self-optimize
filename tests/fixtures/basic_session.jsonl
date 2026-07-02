@@ -1,0 +1,12 @@
+{"type":"ai-title","title":"fixture"}
+{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"S1","timestamp":"2026-06-20T10:00:00Z","version":"2.1.177","cwd":"/tmp/projA","message":{"role":"user","content":"please refactor the parser"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"2026-06-20T10:00:05Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":1000,"cache_creation_input_tokens":20},"content":[{"type":"text","text":"Reading the file first."},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/tmp/projA/parser.py"}}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","timestamp":"2026-06-20T10:00:06Z","toolUseResult":"ok","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"def parse(): pass"}]}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","timestamp":"2026-06-20T10:00:10Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":120,"output_tokens":60},"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/tmp/projA/parser.py"}},{"type":"tool_use","id":"t3","name":"Skill","input":{"skill":"tdd"}}]}}
+{"type":"user","uuid":"u3","parentUuid":"a2","timestamp":"2026-06-20T10:01:00Z","message":{"role":"user","content":"no, that's wrong - I meant the lexer with key sk-ant-api03-SECRETSECRETSECRET"}}
+{"type":"assistant","uuid":"a3","parentUuid":"u3","timestamp":"2026-06-20T10:01:05Z","isSidechain":true,"message":{"role":"assistant","model":"claude-haiku-4-5","usage":{"input_tokens":10,"output_tokens":400},"content":[{"type":"text","text":"sidechain work"}]}}
+{"type":"user","uuid":"u4","parentUuid":"a3","timestamp":"2026-06-20T10:01:06Z","isSidechain":true,"message":{"role":"user","content":"no not that one"}}
+{this line is deliberately malformed json
+{"type":"queue-operation","op":"x"}
+{"type":"user","uuid":"u5","parentUuid":"a3","timestamp":"2026-06-20T10:02:00Z","toolUseResult":{"error":"The user doesn't want to proceed with this tool use."},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t9","content":"denied"}]}}
+{"type":"assistant","uuid":"a4","parentUuid":"u5","timestamp":"2026-06-20T10:02:10Z","attributionSkill":"tdd","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":5,"output_tokens":5},"content":[{"type":"tool_use","id":"t4","name":"mcp__plugin_linear_linear__get_issue","input":{"id":"X-1"}}]}}
