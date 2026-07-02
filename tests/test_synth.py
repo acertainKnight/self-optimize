@@ -85,6 +85,13 @@ class TestSynth(unittest.TestCase):
         self.assertTrue(synth.guard(memory_ok, DATA, extra_roots=["/mem/notes"]))
         self.assertFalse(synth.guard(memory_trav, DATA, extra_roots=["/mem/notes"]))
 
+    def test_guard_file_replace_rejected_in_extra_roots(self):
+        r = {"action": {"type": "file_replace", "tier": "A",
+                        "payload": {"path": "/mem/notes/x.md", "content": "c"}}}
+        self.assertFalse(synth.guard(r, DATA, extra_roots=["/mem/notes"]))
+        r["action"]["type"] = "file_create"
+        self.assertTrue(synth.guard(r, DATA, extra_roots=["/mem/notes"]))
+
     def test_synthesize_threads_extra_roots_to_guard(self):
         rec = bloat_rec()
         rec["category"] = "memory"

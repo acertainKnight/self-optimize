@@ -2,6 +2,8 @@
 and the shared minimal frontmatter parser (stdlib-only, flat key: value)."""
 import hashlib
 import json
+import os
+from pathlib import Path
 
 EVIDENCE_VERSION = "1"
 HARNESS = "claude-code"
@@ -29,6 +31,17 @@ def rec_id(rec: dict) -> str:
 def evidence_hash(rec: dict) -> str:
     basis = json.dumps(sorted(rec.get("evidence_refs", [])))
     return hashlib.sha256(basis.encode()).hexdigest()[:12]
+
+
+def derive_extra_roots(inventory: dict):
+    """Extra sanctioned write roots from evidence inventory. Fail closed:
+    only a non-empty, absolute (after ~ expansion) string qualifies."""
+    settings = (inventory or {}).get("settings")
+    amd = settings.get("autoMemoryDirectory") if isinstance(settings, dict) else None
+    if not isinstance(amd, str) or not amd.strip():
+        return None
+    expanded = str(Path(amd).expanduser())
+    return [expanded] if os.path.isabs(expanded) else None
 
 
 def validate_rec(rec: dict) -> list[str]:

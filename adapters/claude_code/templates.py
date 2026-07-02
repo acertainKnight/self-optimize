@@ -16,23 +16,28 @@ def _model_ok(v: str) -> bool:
     return v in KNOWN_MODELS or v.startswith("claude-")
 
 
-def _require_user_md(f: Path, data_root: Path, extra_roots=None):
-    # lexical normalization (collapses ..) + separator boundary; deliberately NOT
-    # resolve() — that follows symlinks and would break legitimately symlinked skills
+def _require_user_md(f: Path, data_root: Path, extra_roots=None) -> bool:
+    """Confine f to a sanctioned root; returns True when the match is an extra root.
+    Lexical normalization (collapses ..) + separator boundary; the base itself may be
+    a symlink (legitimately symlinked skills dirs keep working), but components BELOW
+    it must not be — a live symlink would redirect the write outside confinement."""
     target = os.path.normpath(str(f))
-    ok = False
-    for sub in ("skills", "agents", "workflows"):
-        base = os.path.normpath(str(data_root / sub))
-        if target == base or target.startswith(base + os.sep):
-            ok = True
-    for root in (extra_roots or []):
-        base = os.path.normpath(str(Path(root)))
-        if target == base or target.startswith(base + os.sep):
-            ok = True
-    if not ok:
+    bases = [(os.path.normpath(str(data_root / sub)), False)
+             for sub in ("skills", "agents", "workflows")]
+    bases += [(os.path.normpath(str(Path(root))), True) for root in (extra_roots or [])]
+    matched = next(((b, extra) for b, extra in bases
+                    if target == b or target.startswith(b + os.sep)), None)
+    if matched is None:
         raise ValueError(f"path outside sanctioned roots under {data_root}: {f}")
     if not target.endswith(".md"):
         raise ValueError(f"not a .md file: {f}")
+    base, is_extra = matched
+    cur = Path(base)
+    for part in Path(target).relative_to(base).parts:
+        cur = cur / part
+        if cur.is_symlink():
+            raise ValueError(f"refusing machine write through symlink: {cur}")
+    return is_extra
 
 
 def render(action: dict, data_root: Path, extra_roots=None) -> list:
@@ -79,7 +84,9 @@ def render(action: dict, data_root: Path, extra_roots=None) -> list:
         return [(f, p["content"])]
     if t == "file_replace":
         f = Path(p["path"]).expanduser()
-        _require_user_md(f, data_root, extra_roots)
+        if _require_user_md(f, data_root, extra_roots):
+            # kills the rewrite-MEMORY.md injection amplifier: memory is create-only
+            raise ValueError("file_replace not permitted in extra roots (memory) — create new files only")
         if not f.exists():
             raise ValueError(f"cannot replace nonexistent file: {f}")
         return [(f, p["content"])]

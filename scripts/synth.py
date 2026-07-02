@@ -68,9 +68,7 @@ def _under(f: str, data_root: Path, sub: str) -> bool:
     return target == base or target.startswith(base + os.sep)
 
 
-def _in_sanctioned_root(f: str, data_root: Path, extra_roots=None) -> bool:
-    if any(_under(f, data_root, sub) for sub in ("skills", "agents", "workflows")):
-        return True
+def _in_extra_root(f: str, extra_roots) -> bool:
     target = os.path.normpath(str(Path(f).expanduser()))
     for root in (extra_roots or []):
         base = os.path.normpath(str(Path(root)))
@@ -91,7 +89,12 @@ def guard(rec: dict, data_root: Path, extra_roots=None) -> bool:
                 and p.get("key") in {"model", "disable-model-invocation", "description"})
     if t in ("file_create", "file_replace"):
         f = p.get("path", "")
-        return _in_sanctioned_root(f, data_root, extra_roots) and str(f).endswith(".md")
+        if not str(f).endswith(".md"):
+            return False
+        if any(_under(f, data_root, sub) for sub in ("skills", "agents", "workflows")):
+            return True
+        # extra roots (memory) are create-only: never rewrite existing notes
+        return t == "file_create" and _in_extra_root(f, extra_roots)
     return t in so_schema.ACTION_TYPES_B  # tier B is report-only: rendered, never executed
 
 
@@ -168,11 +171,8 @@ def main(argv=None):
     lpath = state / "state" / "ledger.jsonl"
     led = ledger_mod.load(lpath)
     recs = [r for f in a.analyst for r in load_analyst_output(f)]
-    extra_roots = None
-    amd = ev.get("inventory", {}).get("settings", {}).get("autoMemoryDirectory")
-    if amd:
-        extra_roots = [amd]
-    findings, dropped = synthesize(recs, ev, led, data_root, extra_roots)
+    findings, dropped = synthesize(recs, ev, led, data_root,
+                                   so_schema.derive_extra_roots(ev["inventory"]))
     for rec in findings:
         ledger_mod.append(lpath, {"id": rec["id"], "status": "proposed", "rec": rec,
                                   "evidence_hash": rec["evidence_hash"]})

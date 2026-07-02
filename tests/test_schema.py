@@ -65,6 +65,16 @@ class TestSchema(unittest.TestCase):
         r["action"]["tier"] = "B"
         self.assertTrue(any("tier" in e for e in schema.validate_rec(r)))
 
+    def test_derive_extra_roots(self):
+        self.assertEqual(schema.derive_extra_roots({"settings": {"autoMemoryDirectory": "~/mem"}}),
+                         [str(pathlib.Path("~/mem").expanduser())])
+        self.assertIsNone(schema.derive_extra_roots({"settings": {"autoMemoryDirectory": "relative/mem"}}))
+        self.assertIsNone(schema.derive_extra_roots({"settings": {"autoMemoryDirectory": 42}}))
+        self.assertIsNone(schema.derive_extra_roots({"settings": {"autoMemoryDirectory": "  "}}))
+        self.assertIsNone(schema.derive_extra_roots(None))
+        self.assertIsNone(schema.derive_extra_roots({}))
+        self.assertIsNone(schema.derive_extra_roots({"settings": "corrupt"}))
+
 
 if __name__ == "__main__":
     unittest.main()

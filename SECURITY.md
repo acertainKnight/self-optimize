@@ -23,9 +23,10 @@ Single-user, per-machine, no telemetry. Trust boundaries and mitigations:
 
 Residual risks, stated honestly: regex+entropy redaction is not perfect; injection
 framing is mitigation, not guarantee; path guards normalize lexically and deliberately
-do not resolve symlinks (so your legitimately symlinked skills keep working) — a
-symlink already placed inside skills/ or agents/ by other means could point outside
-them; `enabledPlugins` disable semantics are only partially documented by Anthropic
+do not resolve symlinks (so a legitimately symlinked skills/ root keeps working), but
+machine-applied writes refuse any symlinked component below the sanctioned root — the
+residual symlink exposure is only human-applied tier-B edits, which you review by
+hand anyway; `enabledPlugins` disable semantics are only partially documented by Anthropic
 (verified against local behavior). The transcript format is explicitly not
 stability-guaranteed — collectors skip what they cannot parse and report the skip
 count.

@@ -64,7 +64,7 @@ class TestTemplates(unittest.TestCase):
                                  self.root)
         self.assertIn("new", edits[0][1])
 
-    def test_extra_roots_accepted_for_file_create_and_replace(self):
+    def test_extra_roots_file_create_ok_file_replace_rejected(self):
         with tempfile.TemporaryDirectory() as mem:
             existing = pathlib.Path(mem) / "old.md"
             existing.write_text("---\nname: old\n---\nbody\n")
@@ -73,10 +73,29 @@ class TestTemplates(unittest.TestCase):
                                                   "content": "---\nname: new\n---\nbody\n"}},
                                      self.root, extra_roots=[mem])
             self.assertEqual(edits[0][0].name, "new.md")
-            edits = templates.render({"type": "file_replace",
-                                      "payload": {"path": str(existing), "content": "---\nname: old\n---\nnew\n"}},
-                                     self.root, extra_roots=[mem])
-            self.assertIn("new", edits[0][1])
+            with self.assertRaises(ValueError):   # memory is create-only: never rewrite existing notes
+                templates.render({"type": "file_replace",
+                                  "payload": {"path": str(existing), "content": "c"}},
+                                 self.root, extra_roots=[mem])
+
+    def test_file_replace_symlinked_target_rejected(self):
+        real = self.root / "real.md"
+        real.write_text("---\nname: real\n---\nbody\n")
+        link = self.root / "agents" / "link.md"
+        link.symlink_to(real)
+        with self.assertRaises(ValueError):
+            templates.render({"type": "file_replace",
+                              "payload": {"path": str(link), "content": "c"}}, self.root)
+
+    def test_file_create_under_symlinked_dir_rejected(self):
+        (self.root / "skills").mkdir()
+        outside = self.root / "outside"
+        outside.mkdir()
+        (self.root / "skills" / "sub").symlink_to(outside)
+        with self.assertRaises(ValueError):
+            templates.render({"type": "file_create",
+                              "payload": {"path": str(self.root / "skills" / "sub" / "x.md"),
+                                          "content": "c"}}, self.root)
 
     def test_extra_roots_traversal_rejected(self):
         with tempfile.TemporaryDirectory() as mem:

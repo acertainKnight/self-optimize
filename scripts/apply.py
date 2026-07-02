@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "adapters" / "claud
 import templates  # noqa: E402
 import ledger as ledger_mod  # noqa: E402
 import metriclib  # noqa: E402
+import schema as so_schema  # noqa: E402
 
 
 def _sha(p: Path):
@@ -46,11 +47,7 @@ def cmd_apply(ids, state, data_root, evidence):
     sessions = json.loads(sessions_file.read_text())["sessions"]
     inv_f = Path(evidence) / "inventory.json"
     inv = json.loads(inv_f.read_text()) if inv_f.exists() else None
-    extra_roots = None
-    if inv:
-        amd = inv.get("settings", {}).get("autoMemoryDirectory")
-        if amd:
-            extra_roots = [amd]
+    extra_roots = so_schema.derive_extra_roots(inv)
     # staggered-apply warning: changes sharing a metric are unattributable to verify
     shared = {}
     for rid in ids:
