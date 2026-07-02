@@ -325,7 +325,7 @@ def _session_minutes(s: dict):
     try:
         start = datetime.fromisoformat(a.replace("Z", "+00:00"))
         end = datetime.fromisoformat(b.replace("Z", "+00:00"))
-    except ValueError:
+    except (ValueError, TypeError, AttributeError):  # non-string timestamps from odd records
         return None
     return max(0.0, (end - start).total_seconds() / 60.0)
 

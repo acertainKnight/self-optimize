@@ -106,6 +106,20 @@ class TestInventory(unittest.TestCase):
             settings_hook = next(h for h in inv["hooks"] if h["id"] == "hook:settings")
             self.assertGreater(settings_hook["est_context_tokens"], 0)
 
+    def test_hooks_manifest_pointing_at_directory_degrades_gracefully(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            ev = pathlib.Path(d) / "ev"
+            ev.mkdir()
+            make_fake_claude(root)
+            plug = root / "plugins" / "cache" / "mp" / "toolkit" / "1.0.0"
+            # manifest's hooks path is a DIRECTORY — read_text would raise IsADirectoryError
+            (plug / ".claude-plugin" / "plugin.json").write_text(json.dumps({"hooks": "hooks"}))
+            inv = inventory.build_inventory(root, ev)
+            ids = {h["id"] for h in inv["hooks"]}
+            self.assertIn("hook:settings", ids)               # rest of inventory intact
+            self.assertNotIn("hook:plugin:toolkit@mp", ids)   # unreadable → entry skipped
+
     def test_main_writes_inventory_with_600_perms(self):
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d) / "claude"

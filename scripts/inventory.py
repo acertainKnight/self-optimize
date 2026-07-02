@@ -87,7 +87,10 @@ def _scan_hooks(settings: dict, enabled: dict, installed: dict) -> list:
         text = json.dumps(hooks_field)
         if isinstance(hooks_field, str):
             hf = install / hooks_field
-            text = hf.read_text(errors="replace") if hf.exists() else ""
+            try:
+                text = hf.read_text(errors="replace") if hf.exists() else ""
+            except OSError:
+                text = ""
         if text:
             out.append({"id": f"hook:plugin:{pid}", "source": f"plugin:{pid}",
                         "est_context_tokens": _est(text)})
