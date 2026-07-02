@@ -55,9 +55,18 @@ def main(argv=None):
     Path(a.out).write_text(json.dumps({"rows": rows}, indent=1))
     for r in rows:
         if r["verdict"] in ("verified", "regressed"):
+            # carry forward apply context: ledger.load is last-entry-wins, so the
+            # verdict entry must keep files/snapshot or rollback finds nothing
+            prior = entries.get(r["id"], {})
             ledger_mod.append(lpath, {"id": r["id"], "status": r["verdict"],
                                       "measured": {"value": r["value"], "n": r["n"],
-                                                   "rel_change": r["rel_change"]}})
+                                                   "rel_change": r["rel_change"]},
+                                      "rec": prior.get("rec"),
+                                      "files": prior.get("files"),
+                                      "snapshot": prior.get("snapshot"),
+                                      "applied_at": prior.get("applied_at"),
+                                      "baseline": prior.get("baseline"),
+                                      "evidence_hash": prior.get("evidence_hash")})
     print(f"verified={sum(r['verdict'] == 'verified' for r in rows)} "
           f"regressed={sum(r['verdict'] == 'regressed' for r in rows)} "
           f"inconclusive={sum(r['verdict'] == 'inconclusive' for r in rows)}")

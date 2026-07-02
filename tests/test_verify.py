@@ -35,6 +35,37 @@ class TestVerify(unittest.TestCase):
         e2 = entry(2.0); e2["rec"]["metric"] = {"key": "none"}
         self.assertEqual(verify.verify_entries({"a": e2}, sessions([0, 0, 0]), None, CFG), [])
 
+    def test_rollback_still_works_after_verdict(self):
+        import json, tempfile
+        from datetime import datetime, timedelta, timezone
+        import apply as apply_mod
+        import ledger
+        base = pathlib.Path(tempfile.mkdtemp())
+        state, data, ev = base / "state", base / "claude", base / "ev"
+        for d in (state, data, ev):
+            d.mkdir()
+        (data / "settings.json").write_text(json.dumps({"model": "opusplan"}))
+        (ev / "sessions.json").write_text(json.dumps({"sessions": [
+            {"started_at": "2026-06-01T00:00:00Z", "corrections_count": 1}]}))
+        rec = {"title": "t", "category": "bloat", "evidence_refs": ["x"],
+               "impact": {"ordinal": "low"}, "risk": "low",
+               "metric": {"key": "correction_rate", "direction": "down", "scope": "global"},
+               "action": {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                          "payload": {"file": "settings.json",
+                                      "key_path": ["skillOverrides", "d"], "value": "off"}}}
+        lpath = state / "state" / "ledger.jsonl"
+        ledger.append(lpath, {"id": "r1", "status": "proposed", "rec": rec, "evidence_hash": "e"})
+        apply_mod.cmd_apply(["r1"], state, data, ev)
+        now = datetime.now(timezone.utc)
+        (ev / "sessions.json").write_text(json.dumps({"sessions": [
+            {"started_at": (now + timedelta(days=i + 1)).isoformat(), "corrections_count": 5}
+            for i in range(12)]}))
+        verify.main(["--evidence", str(ev), "--state", str(state),
+                     "--out", str(ev / "verify.json")])
+        self.assertEqual(ledger.load(lpath)["r1"]["status"], "regressed")
+        apply_mod.cmd_rollback("r1", state)   # the report's one-command rollback must work
+        self.assertEqual(json.loads((data / "settings.json").read_text()), {"model": "opusplan"})
+
 
 if __name__ == "__main__":
     unittest.main()
