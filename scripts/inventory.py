@@ -91,13 +91,17 @@ def build_artifacts(inv: dict, evidence_dir) -> dict:
                     key=lambda t: -t[0])
     artifacts = []
     for count, kind, item in scored[:10]:
+        p = Path(item["path"])
         try:
-            body = Path(item["path"]).read_text(errors="replace")[:8000]
+            body = p.read_text(errors="replace")[:8000]
         except OSError:
             continue
+        # ponytail: 3 parent levels covers skills/<name>/SKILL.md under any root;
+        # the scanners never nest artifacts deeper than that
+        symlinked = p.is_symlink() or any(par.is_symlink() for par in list(p.parents)[:3])
         artifacts.append({"id": f"artifact:{kind}:{item['name']}", "kind": kind,
                           "source": item["source"], "path": item["path"],
-                          "activation_count": count, "body": body})
+                          "activation_count": count, "symlinked": symlinked, "body": body})
     return {"schema_version": so_schema.EVIDENCE_VERSION, "harness": so_schema.HARNESS,
             "artifacts": artifacts}
 

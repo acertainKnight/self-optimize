@@ -32,9 +32,9 @@ Action selection is ownership-based — check `source` on the artifact:
 1. `source == "user"` (skill or agent): tier A `file_replace`. payload
    `{"path": "<artifact's path field, unchanged>", "content": "<complete rewritten
    file, frontmatter + body>"}`.
-2. If the target file or any directory under its sanctioned root is a symlink, do NOT
-   emit file_replace or file_create for it — machine writes refuse symlinked paths;
-   emit a tier-B `diff` recommendation instead.
+2. If the artifact's `symlinked` field is true, emit a tier-B `diff` recommendation
+   with payload `{"file": <path>, "diff": <unified diff>}` — machine writes refuse
+   symlinked paths. THIS RULE OVERRIDES RULES 1 AND 3.
 3. `source` starts with `plugin:` and `kind == "agent"`: tier A shadow-agent
    `file_create` (documented precedence — a user-level `<config-dir>/agents/<name>.md`
    shadows a plugin agent of the same name; see rule:subagent-model-routing). payload

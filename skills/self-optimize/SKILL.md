@@ -62,5 +62,5 @@ echo its output verbatim to the user, and stop:
    printed top-5 with their `/self-optimize apply <id>` / `reject <id>` hints.
 
 Rules for the runner: never read raw transcripts yourself — everything flows through
-the evidence pack; do not exceed the two analyst agents; if any script exits non-zero,
+the evidence pack; do not exceed the three analyst agents; if any script exits non-zero,
 show the error and stop rather than improvising.

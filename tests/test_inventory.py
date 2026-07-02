@@ -150,6 +150,24 @@ class TestInventory(unittest.TestCase):
             self.assertEqual(my["source"], "user")
             self.assertLessEqual(len(my["body"]), 8000)
 
+    def test_build_artifacts_symlinked_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            ev = pathlib.Path(d) / "ev"
+            ev.mkdir()
+            make_fake_claude(root)
+            real = pathlib.Path(d) / "elsewhere" / "sneaky"
+            real.mkdir(parents=True)
+            (real / "SKILL.md").write_text(SKILL_MD.replace("used-skill", "sneaky"))
+            (root / "skills" / "sneaky").symlink_to(real, target_is_directory=True)
+            (ev / "activation.json").write_text(json.dumps(
+                {"schema_version": "1", "harness": "claude-code", "items": {}}))
+            inv = inventory.build_inventory(root, ev)
+            art = inventory.build_artifacts(inv, ev)
+            by_id = {a["id"]: a for a in art["artifacts"]}
+            self.assertTrue(by_id["artifact:skill:sneaky"]["symlinked"])
+            self.assertFalse(by_id["artifact:skill:my-skill"]["symlinked"])
+
     def test_main_writes_artifacts_with_600_perms(self):
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d) / "claude"

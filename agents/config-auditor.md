@@ -50,7 +50,8 @@ Priorities:
 5. NEW PLUGIN: when inventory.available_plugins contains an entry whose description
    plausibly fills a gap you can see in inventory.unused/rare or in the settings
    surface, propose it as tier B manual: {"description": "/plugin install <name>@<marketplace> — <why, citing the gap>"}.
-   category "new-plugin". evidence_refs must include the `availplugin:<name@mp>` ref
+   category "new-plugin". metric: {"key": "none"} — plugin-install suggestions aren't
+   auto-verifiable. evidence_refs must include the `availplugin:<name@mp>` ref
    plus the `inventory:` ref for the gap it fills. Never claim compatibility you cannot
    verify from the description alone — phrase it as "worth evaluating," not a firm fix.
 
