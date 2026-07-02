@@ -8,14 +8,16 @@ AGENT_MD = "---\nname: helper\nmodel: opus\ndescription: does things\n---\npromp
 
 
 def make_fake_claude(root: pathlib.Path):
-    # settings + installed plugin with one skill and one agent
+    # settings + installed plugin with one skill, one agent, and hooks (settings + plugin)
     (root).mkdir(parents=True)
     (root / "settings.json").write_text(json.dumps({
         "model": "opusplan", "outputStyle": "explanatory",
         "enabledPlugins": {"toolkit@mp": True},
         "skillOverrides": {"dusty-skill": "off"},
         "env": {"SECRET_TOKEN": "must-never-appear"},
-        "permissions": {"defaultMode": "acceptEdits"}}))
+        "permissions": {"defaultMode": "acceptEdits"},
+        "hooks": {"PreToolUse": [{"matcher": "Bash",
+                                  "hooks": [{"type": "command", "command": "echo hi"}]}]}}))
     plug = root / "plugins" / "cache" / "mp" / "toolkit" / "1.0.0"
     (plug / "skills" / "used-skill").mkdir(parents=True)
     (plug / "skills" / "used-skill" / "SKILL.md").write_text(SKILL_MD)
@@ -23,6 +25,11 @@ def make_fake_claude(root: pathlib.Path):
     (plug / "skills" / "dusty-skill" / "SKILL.md").write_text(SKILL2_MD)
     (plug / "agents").mkdir(parents=True)
     (plug / "agents" / "helper.md").write_text(AGENT_MD)
+    (plug / ".claude-plugin").mkdir(parents=True)
+    (plug / ".claude-plugin" / "plugin.json").write_text(json.dumps({"hooks": "hooks/hooks.json"}))
+    (plug / "hooks").mkdir(parents=True)
+    (plug / "hooks" / "hooks.json").write_text(json.dumps(
+        {"PostToolUse": [{"matcher": "Write", "hooks": [{"type": "command", "command": "lint"}]}]}))
     (root / "plugins").mkdir(exist_ok=True)
     (root / "plugins" / "installed_plugins.json").write_text(json.dumps({
         "version": 2, "plugins": {"toolkit@mp": [{"installPath": str(plug), "version": "1.0.0"}]}}))
@@ -57,6 +64,7 @@ class TestInventory(unittest.TestCase):
             self.assertEqual(dusty["override"], "off")
             self.assertEqual(dusty["disable_model_invocation"], "true")
             self.assertNotIn("must-never-appear", json.dumps(inv))  # env allowlist holds
+            self.assertTrue(inv["claude_md"][0]["id"].startswith("claude_md:"))
 
     def test_user_skill_shadows_plugin_skill_and_empty_installpath_skipped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -84,6 +92,19 @@ class TestInventory(unittest.TestCase):
             (root / "settings.json").write_text("{broken")
             inv = inventory.build_inventory(root, None)
             self.assertEqual(inv["plugins"], [])
+
+    def test_hooks_inventory_from_settings_and_plugin_manifest(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            ev = pathlib.Path(d) / "ev"
+            ev.mkdir()
+            make_fake_claude(root)
+            inv = inventory.build_inventory(root, ev)
+            ids = {h["id"] for h in inv["hooks"]}
+            self.assertIn("hook:settings", ids)
+            self.assertIn("hook:plugin:toolkit@mp", ids)
+            settings_hook = next(h for h in inv["hooks"] if h["id"] == "hook:settings")
+            self.assertGreater(settings_hook["est_context_tokens"], 0)
 
     def test_main_writes_inventory_with_600_perms(self):
         with tempfile.TemporaryDirectory() as d:

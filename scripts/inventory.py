@@ -58,6 +58,42 @@ def _dedupe(items: list) -> list:
     return list(by_id.values())
 
 
+def _scan_hooks(settings: dict, enabled: dict, installed: dict) -> list:
+    """Token-cost visibility only — hook bodies are never rendered into a rec or
+    report, just estimated, since a command's own arguments could carry secrets."""
+    out = []
+    hooks_block = settings.get("hooks") or {}
+    if hooks_block:
+        out.append({"id": "hook:settings", "source": "user",
+                    "est_context_tokens": _est(json.dumps(hooks_block))})
+    for pid, entries in installed.items():
+        if not enabled.get(pid, False):
+            continue
+        entry = entries[0] if isinstance(entries, list) and entries else {}
+        install_path = entry.get("installPath") or ""
+        install = Path(install_path)
+        if not install_path or not install.exists():
+            continue
+        pj = install / ".claude-plugin" / "plugin.json"
+        if not pj.exists():
+            continue
+        try:
+            manifest = json.loads(pj.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        hooks_field = manifest.get("hooks")
+        if not hooks_field:
+            continue
+        text = json.dumps(hooks_field)
+        if isinstance(hooks_field, str):
+            hf = install / hooks_field
+            text = hf.read_text(errors="replace") if hf.exists() else ""
+        if text:
+            out.append({"id": f"hook:plugin:{pid}", "source": f"plugin:{pid}",
+                        "est_context_tokens": _est(text)})
+    return out
+
+
 def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
     data_root = Path(data_root)
     settings = {}
@@ -113,16 +149,16 @@ def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
     claude_md = []
     gmd = data_root / "CLAUDE.md"
     if gmd.exists():
-        claude_md.append({"path": str(gmd), "bytes": gmd.stat().st_size,
-                          "est_tokens": gmd.stat().st_size // 4})
+        claude_md.append({"id": f"claude_md:{str(gmd)}", "path": str(gmd),
+                          "bytes": gmd.stat().st_size, "est_tokens": gmd.stat().st_size // 4})
     if evidence_dir and (Path(evidence_dir) / "sessions.json").exists():
         cwds = {s.get("cwd") for s in
                 json.loads((Path(evidence_dir) / "sessions.json").read_text())["sessions"]}
         for cwd in sorted(c for c in cwds if c):
             cmd = Path(cwd) / "CLAUDE.md"
             if cmd.exists():
-                claude_md.append({"path": str(cmd), "bytes": cmd.stat().st_size,
-                                  "est_tokens": cmd.stat().st_size // 4})
+                claude_md.append({"id": f"claude_md:{str(cmd)}", "path": str(cmd),
+                                  "bytes": cmd.stat().st_size, "est_tokens": cmd.stat().st_size // 4})
 
     act = {}
     if evidence_dir and (Path(evidence_dir) / "activation.json").exists():
@@ -141,9 +177,10 @@ def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
             + sum(c["est_tokens"] for c in claude_md))
 
     perms = settings.get("permissions", {}) or {}
+    hooks = _scan_hooks(settings, enabled, installed)
     return {"schema_version": so_schema.EVIDENCE_VERSION, "harness": so_schema.HARNESS,
             "plugins": plugins, "skills": skills, "agents": agents, "mcp_servers": mcp,
-            "claude_md": claude_md,
+            "claude_md": claude_md, "hooks": hooks,
             "settings": {**{k: settings.get(k) for k in SETTINGS_ALLOWLIST},
                          "permissions_default_mode": perms.get("defaultMode")},
             "base_context_est": base, "unused": unused, "rare": rare}

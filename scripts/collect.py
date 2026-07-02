@@ -155,7 +155,7 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
 
 # ---------------------------------------------------------------- corpus walk
 import argparse
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from fnmatch import fnmatch
 
 import schema as so_schema
@@ -318,15 +318,33 @@ def write_pack(out_dir: Path, pack: dict, constraints: dict | None = None) -> No
         f.chmod(0o600)
 
 
+def _session_minutes(s: dict):
+    a, b = s.get("started_at"), s.get("ended_at")
+    if not a or not b:
+        return None
+    try:
+        start = datetime.fromisoformat(a.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(b.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0.0, (end - start).total_seconds() / 60.0)
+
+
 def metrics_row(run_id: str, pack: dict) -> dict:
     t = pack["usage"]["totals"]
     n = max(t["sessions"], 1)
+    sessions = pack["sessions"]
+    zero_corr = sum(1 for s in sessions if s.get("corrections_count", 0) == 0)
+    durations = [d for d in (_session_minutes(s) for s in sessions) if d is not None]
     return {"run_id": run_id, "n_sessions": t["sessions"],
             "tokens_per_session": (t["input_tokens"] + t["output_tokens"]) / n,
             "correction_rate": pack["usage"]["corrections"]["rate_per_session"],
             "duplicate_read_rate": pack["usage"]["waste"]["duplicate_reads_total"] / n,
             "permission_stalls": pack["usage"]["waste"]["permission_stalls_total"] / n,
             "parse_skipped": pack["usage"]["parse"]["skipped_lines"],
+            "zero_correction_session_rate": zero_corr / n,
+            "mean_session_minutes": (sum(durations) / len(durations)) if durations else None,
+            "turns_per_session": t["turns"] / n,
             "base_context_est": None, "unused_surface_count": None}
 
 
@@ -352,7 +370,6 @@ def main(argv=None):
     correction_re = re.compile(cfg["correction_regex"]) if cfg["correction_regex"] else DEFAULT_CORRECTION_RE
     since = a.since
     if since is None and cfg["since_days"]:
-        from datetime import datetime, timedelta, timezone
         since = (datetime.now(timezone.utc) - timedelta(days=cfg["since_days"])).isoformat()
     budget = a.max_budget if a.max_budget is not None else cfg.get("max_budget_tokens", 0)
     caps = scale_caps_to_budget(cfg["sample_caps"], budget)

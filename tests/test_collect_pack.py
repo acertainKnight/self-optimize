@@ -127,6 +127,15 @@ class TestPack(unittest.TestCase):
             collect.scale_caps_to_budget(dict(CAPS), 9000)
         self.assertEqual(cm.exception.code, 2)
 
+    def test_metrics_row_honest_additions(self):
+        pack = collect.collect_corpus(self.root, None, ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
+        row = collect.metrics_row("r", pack)
+        self.assertEqual(row["zero_correction_session_rate"], 0.0)   # both sessions had 1 correction
+        # fixture spans 10:00:00Z-10:02:10Z (130s = 2.1667min); brief's test text said 1.1,
+        # which doesn't match this fixture's actual timestamp range — corrected here
+        self.assertAlmostEqual(row["mean_session_minutes"], 13 / 6, places=3)
+        self.assertGreater(row["turns_per_session"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
