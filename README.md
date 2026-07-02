@@ -32,10 +32,14 @@ excerpts, so think before pointing this at a synced folder).
 Every full run also writes `<report_dir>/latest.html` (and a per-run
 `<run-id>.html`) — a self-contained page, open it straight from disk
 (`open <config-dir>/self-optimize/reports/latest.html`). For each tier-A finding
-pick Apply / Reject / Skip (Reject needs a reason); check any tier-B item you want
-help with as "Select for assisted work". Your choices persist locally as you go.
-When ready, click **Download decisions.json** (or **Copy command** for a quick
-apply/reject one-liner instead), then run:
+pick Apply / Reject / Amend / Skip (Reject and Amend both need a reason); check
+any tier-B item you want help with as "Select for assisted work". Amend rejects
+the finding in favor of a different action: pick one of the dashboard's suggested
+alternatives or paste your own replacement action JSON — either way it's
+re-validated and guarded exactly like any other action before it's ever applied.
+Your choices persist locally as you go. When ready, click **Download
+decisions.json** (or **Copy command** for a quick apply/reject one-liner instead
+— amendments require Download, they can't be expressed as a command), then run:
 
     /self-optimize decide
 

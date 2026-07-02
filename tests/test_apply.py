@@ -1,7 +1,8 @@
-import json, sys, pathlib, tempfile, unittest, unittest.mock
+import contextlib, io, json, sys, pathlib, tempfile, unittest, unittest.mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 import apply as apply_mod
 import ledger
+import schema
 
 
 def setting_rec():
@@ -284,6 +285,330 @@ class TestDecide(unittest.TestCase):
         logged = json.loads(files[0].read_text())
         self.assertEqual(logged["refused"], ["r4"])
         self.assertEqual(logged["apply"], [])
+
+    def test_amend_valid_action_rejects_original_and_applies_replacement(self):
+        # r1 is a skillOverrides-name-only-shaped rec (actually "off" here, doesn't
+        # matter); amend it into a plugin-disable action instead.
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        amend_action = {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                         "payload": {"file": "settings.json",
+                                     "key_path": ["enabledPlugins", "some-plugin"], "value": False}}
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r1", "reason": "prefer disabling the whole plugin",
+                    "action": amend_action}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        led = ledger.load(self.lpath)
+        self.assertEqual(led["r1"]["status"], "rejected")
+        self.assertEqual(led["r1"]["reason"], "amended: prefer disabling the whole plugin")
+        self.assertEqual(len(result["amended"]), 1)
+        new_id = result["amended"][0]["new"]
+        self.assertEqual(result["amended"][0]["orig"], "r1")
+        self.assertEqual(result["amended"][0]["title"], "Amended: Disable dusty")
+        self.assertEqual(led[new_id]["status"], "applied")
+        self.assertEqual(led[new_id]["rec"]["action"], amend_action)
+        settings = json.loads((self.data / "settings.json").read_text())
+        self.assertEqual(settings["enabledPlugins"]["some-plugin"], False)
+        self.assertEqual(result["amend_refused"], [])
+        # decision log records the requested amend and its outcome
+        logged = json.loads(list((self.state / "state" / "decisions").iterdir())[0].read_text())
+        self.assertEqual(logged["amend"], [{"id": "r1", "reason": "prefer disabling the whole plugin",
+                                            "action": amend_action}])
+        self.assertEqual(logged["amended"], result["amended"])
+        self.assertEqual(logged["amend_refused"], [])
+
+    def test_amend_malicious_key_path_refused_leaves_original_untouched(self):
+        # key_path root "hooks" is outside synth.guard's ALLOWED_SETTING_ROOTS
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        malicious = {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                     "payload": {"file": "settings.json", "key_path": ["hooks", "x"], "value": "evil"}}
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r2", "reason": "try something else", "action": malicious}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        led = ledger.load(self.lpath)
+        self.assertEqual(led["r2"]["status"], "proposed")   # untouched, not rejected
+        self.assertEqual(result["amended"], [])
+        self.assertEqual(len(result["amend_refused"]), 1)
+        self.assertEqual(result["amend_refused"][0]["id"], "r2")
+        settings = json.loads((self.data / "settings.json").read_text())
+        self.assertNotIn("hooks", settings)
+
+    def test_amend_malicious_file_create_outside_sanctioned_roots_refused(self):
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        malicious = {"harness": "claude-code", "tier": "A", "type": "file_create",
+                     "payload": {"path": "/tmp/self-optimize-test-evil.md", "content": "pwned"}}
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r2", "reason": "try something else", "action": malicious}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["r2"]["status"], "proposed")
+        self.assertEqual(result["amended"], [])
+        self.assertEqual(len(result["amend_refused"]), 1)
+        self.assertFalse(pathlib.Path("/tmp/self-optimize-test-evil.md").exists())
+
+    def test_amend_id_not_in_run_findings_refused(self):
+        # r4 is proposed tier-A in the ledger but not in this run's findings.json
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        valid_action = {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                        "payload": {"file": "settings.json",
+                                    "key_path": ["skillOverrides", "dusty"], "value": "name-only"}}
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r4", "reason": "not this run", "action": valid_action}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["r4"]["status"], "proposed")
+        self.assertIn("r4", result["refused"])
+        self.assertEqual(result["amended"], [])
+        self.assertEqual(result["amend_refused"], [])
+
+    def test_duplicate_amend_ids_processed_once(self):
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        action = {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                  "payload": {"file": "settings.json",
+                              "key_path": ["skillOverrides", "dusty"], "value": "name-only"}}
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r1", "reason": "try name-only", "action": action},
+                   {"id": "r1", "reason": "try name-only", "action": action}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(len(result["amended"]), 1)
+        led = ledger.load(self.lpath)
+        self.assertEqual(led["r1"]["status"], "rejected")
+
+    def test_amend_tier_b_replacement_refused_not_silently_applied(self):
+        # a tier-B action passes validate_rec + synth.guard (guard allows tier-B
+        # through since it's ordinarily report-only) but amend always auto-applies,
+        # so a tier-B "replacement" can never be honestly reported as amended
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        tier_b_action = {"harness": "claude-code", "tier": "B", "type": "manual",
+                         "payload": {"description": "do something by hand"}}
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r1", "reason": "try tier B", "action": tier_b_action}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
+        self.assertEqual(result["amended"], [])
+        self.assertEqual(len(result["amend_refused"]), 1)
+
+    def test_amend_replacement_apply_failure_leaves_original_untouched(self):
+        # the replacement is a validly-guarded but unappliable action (target file
+        # already exists) -> cmd_apply marks it apply_failed; the original must NOT
+        # be rejected out from under a failed amend
+        agent_dir = self.data / "agents"
+        agent_dir.mkdir()
+        existing = agent_dir / "already-here.md"
+        existing.write_text("---\nname: already-here\n---\nold\n")
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        doomed_action = {"harness": "claude-code", "tier": "A", "type": "file_create",
+                         "payload": {"path": str(existing), "content": "---\nname: x\n---\nnew\n"}}
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r1", "reason": "try a new file", "action": doomed_action}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
+        self.assertEqual(result["amended"], [])
+        self.assertEqual(len(result["amend_refused"]), 1)
+        self.assertIn("failed to apply", result["amend_refused"][0]["reason"])
+        self.assertEqual(existing.read_text(), "---\nname: already-here\n---\nold\n")
+
+    def test_amend_missing_payload_key_does_not_crash_decide(self):
+        # payload has no "value" for a setting_change; schema/guard only check
+        # shape, not every payload key, so templates.render's p["value"] would
+        # KeyError — decide must handle this cleanly, not crash mid-run
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        broken_action = {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                         "payload": {"file": "settings.json", "key_path": ["skillOverrides", "dusty"]}}
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r1", "reason": "missing value", "action": broken_action}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)   # must not raise
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
+        self.assertEqual(result["amended"], [])
+        self.assertEqual(len(result["amend_refused"]), 1)
+        self.assertIn("log", result)   # decision log still gets written
+
+    def test_amend_malformed_entries_reported_not_dropped(self):
+        # blank reason and non-dict action must surface in amend_refused, not vanish
+        valid_action = {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                        "payload": {"file": "settings.json",
+                                    "key_path": ["skillOverrides", "dusty"], "value": "off"}}
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r1", "reason": "   ", "action": valid_action},
+                   {"id": "r2", "reason": "fine", "action": "not-a-dict"}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
+        self.assertEqual(ledger.load(self.lpath)["r2"]["status"], "proposed")
+        self.assertEqual(result["amended"], [])
+        refused_ids = {r["id"] for r in result["amend_refused"]}
+        self.assertEqual(refused_ids, {"r1", "r2"})
+
+    def test_amend_new_id_collision_with_existing_ledger_entry_refused(self):
+        # rec_id hashes only category|type|payload — simulate an unrelated,
+        # already-applied ledger entry that happens to hash to the same id this
+        # amend's replacement would mint, and confirm decide refuses rather than
+        # silently clobbering that unrelated entry's ledger history
+        colliding_action = {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                            "payload": {"file": "settings.json",
+                                        "key_path": ["enabledPlugins", "collide-plugin"], "value": False}}
+        replacement_preview = dict(setting_rec())
+        replacement_preview["action"] = colliding_action
+        collide_id = schema.rec_id(replacement_preview)
+        ledger.append(self.lpath, {"id": collide_id, "status": "applied",
+                                   "rec": {"title": "unrelated prior change"},
+                                   "snapshot": "/tmp/fake-snap-does-not-exist", "files": [],
+                                   "evidence_hash": "prior"})
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r2", "reason": "disable collide-plugin instead",
+                    "action": colliding_action}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        led = ledger.load(self.lpath)
+        self.assertEqual(led["r2"]["status"], "proposed")
+        self.assertEqual(result["amended"], [])
+        self.assertEqual(len(result["amend_refused"]), 1)
+        self.assertIn("collides", result["amend_refused"][0]["reason"])
+        # the pre-existing colliding entry must be untouched
+        self.assertEqual(led[collide_id]["status"], "applied")
+        self.assertEqual(led[collide_id]["rec"]["title"], "unrelated prior change")
+
+    def test_amend_non_dict_payload_refused_not_crash(self):
+        # payload=[] is valid JSON, isinstance(action, dict) is True, but
+        # synth.guard's p.get(...) calls would AttributeError on a list payload
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        crashy_action = {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                         "payload": []}
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r1", "reason": "malformed on purpose", "action": crashy_action}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)   # must not raise
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
+        self.assertEqual(result["amended"], [])
+        self.assertEqual(len(result["amend_refused"]), 1)
+        self.assertIn("log", result)
+
+    def test_amend_unhashable_key_path_element_refused_not_crash(self):
+        # a dict key_path element is unhashable -> dict.get(k) raises TypeError deep
+        # inside templates.render if this ever reached cmd_apply; must be caught
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        crashy_action = {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                         "payload": {"file": "settings.json",
+                                     "key_path": ["skillOverrides", {"a": 1}], "value": "off"}}
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r1", "reason": "malformed key_path", "action": crashy_action}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)   # must not raise
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
+        self.assertEqual(result["amended"], [])
+        self.assertIn("log", result)
+
+    def test_amend_identical_to_original_refused(self):
+        # real ledger/synth ids ARE schema.rec_id(rec) — unlike this test file's
+        # convenience literal ids ("r1" etc) — so a genuinely identical replacement
+        # only collides with its own original id when the id is a real hash
+        real_rec = setting_rec()
+        real_id = schema.rec_id(real_rec)
+        ledger.append(self.lpath, {"id": real_id, "status": "proposed", "rec": real_rec,
+                                   "evidence_hash": "e-real"})
+        findings = json.loads((self.ev / "findings.json").read_text())
+        findings["findings"].append({"id": real_id})
+        (self.ev / "findings.json").write_text(json.dumps(findings))
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": real_id, "reason": "no-op", "action": real_rec["action"]}])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)[real_id]["status"], "proposed")
+        self.assertEqual(result["amended"], [])
+        self.assertEqual(len(result["amend_refused"]), 1)
+        self.assertIn("identical", result["amend_refused"][0]["reason"])
+
+    def test_amend_retry_after_failed_apply_succeeds(self):
+        # first attempt: target already exists -> apply_failed, original untouched.
+        # second attempt (same replacement, e.g. after the user removed the
+        # conflict) must NOT be blocked by the leftover apply_failed ledger entry —
+        # "fix and retry" must actually work
+        agent_dir = self.data / "agents"
+        agent_dir.mkdir()
+        conflict = agent_dir / "conflict.md"
+        conflict.write_text("---\nname: conflict\n---\nold\n")
+        action = {"harness": "claude-code", "tier": "A", "type": "file_create",
+                  "payload": {"path": str(conflict), "content": "---\nname: x\n---\nnew\n"}}
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r1", "reason": "first try", "action": action}])))
+        first = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(len(first["amend_refused"]), 1)
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
+        # fix the conflict, retry the exact same amend
+        conflict.unlink()
+        dfile2 = self.downloads / "self-optimize-decisions-ev2.json"
+        dfile2.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r1", "reason": "retry", "action": action}])))
+        second = apply_mod.cmd_decide(str(dfile2), self.state, self.data, self.ev)
+        self.assertEqual(len(second["amended"]), 1)
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "rejected")
+        self.assertTrue(conflict.exists())
+
+    def test_amend_batch_sees_earlier_items_own_ledger_mutation(self):
+        # item 1's replacement mints exactly item 2's real ledger id (a realistic
+        # rec_id collision via the dashboard's own canned "disable plugin" alt);
+        # item 2 in the SAME batch must see item 1's just-applied mutation rather
+        # than a stale, loaded-once-before-the-loop ledger snapshot
+        rec_b = setting_rec()
+        rec_b["action"] = {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                           "payload": {"file": "settings.json",
+                                       "key_path": ["enabledPlugins", "someplug"], "value": False}}
+        real_id_b = schema.rec_id(rec_b)
+        ledger.append(self.lpath, {"id": real_id_b, "status": "proposed", "rec": rec_b,
+                                   "evidence_hash": "e-b"})
+        findings = json.loads((self.ev / "findings.json").read_text())
+        findings["findings"].append({"id": real_id_b})
+        (self.ev / "findings.json").write_text(json.dumps(findings))
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[
+                {"id": "r1", "reason": "amend r1 into b's exact action", "action": rec_b["action"]},
+                {"id": real_id_b, "reason": "amend b too", "action": setting_rec()["action"]},
+            ])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(len(result["amended"]), 1)
+        self.assertEqual(result["amended"][0]["new"], real_id_b)
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "rejected")
+        self.assertEqual(len(result["amend_refused"]), 1)
+        self.assertEqual(result["amend_refused"][0]["id"], real_id_b)
+        self.assertIn("not amendable", result["amend_refused"][0]["reason"])
+        # critically: real_id_b must still show applied, not clobbered to rejected
+        self.assertEqual(ledger.load(self.lpath)[real_id_b]["status"], "applied")
+
+    def test_amend_refused_console_output_shown_when_all_entries_malformed(self):
+        # when every amend entry is malformed, amend_items is empty but
+        # amend_refused isn't — the console block must not be silently skipped
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        dfile.write_text(json.dumps(self._decisions(
+            apply=[], reject=[], assist=[],
+            amend=[{"id": "r1", "reason": "   ", "action": {"tier": "A"}}])))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(len(result["amend_refused"]), 1)
+        self.assertIn("AMEND REFUSED", buf.getvalue())
+
+    def test_backward_compat_no_amend_key(self):
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        dfile.write_text(json.dumps(self._decisions()))   # no "amend" key at all
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        led = ledger.load(self.lpath)
+        self.assertEqual(led["r1"]["status"], "applied")
+        self.assertEqual(led["r2"]["status"], "rejected")
+        self.assertEqual(result["amended"], [])
+        self.assertEqual(result["amend_refused"], [])
 
 
 if __name__ == "__main__":

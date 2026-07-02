@@ -7,17 +7,22 @@ decisions.json schema (downloaded from the dashboard, consumed by `apply.py deci
       "run_id": str,
       "apply": [id, ...],                       # tier-A ids to apply
       "reject": [{"id": str, "reason": str}],   # tier-A ids to reject, reason required
-      "assist": [id, ...]                       # tier-B ids selected for human-supervised work
+      "assist": [id, ...],                      # tier-B ids selected for human-supervised work
+      "amend": [{"id": str, "reason": str, "action": {...}}]   # reject id, apply this instead
     }
 Unknown top-level keys are ignored by the consumer; ids must be strings; run_id must
 match the evidence run being decided against or the file is refused.
 
 Security: every analyst-derived string (title, category, risk, evidence refs, payload
 text) is html.escape()'d before interpolation into the document. The one piece of data
-the page's JS needs (run id + per-finding id/tier/status) is embedded as inert JSON via
-a `<script type="application/json" id="data">` island, never string-concatenated into
-executable JS; `<` is escaped to `\\u003c` in that JSON text so a title or payload
-value can never close the surrounding <script> tag.
+the page's JS needs (run id + per-finding id/tier/status/amend-alternatives) is embedded
+as inert JSON via a `<script type="application/json" id="data">` island, never
+string-concatenated into executable JS; `<` is escaped to `\\u003c` in that JSON text so
+a title or payload value can never close the surrounding <script> tag. The per-finding
+`alts` (canonical amend alternatives) are built server-side from typed id/enum values
+only — never from analyst free text — and the replacement action a user picks (a canned
+alt, or hand-edited JSON) is re-validated by `schema.validate_rec` + `synth.guard` in
+`apply.py::cmd_decide` before anything touches disk; the dashboard/JS side is UI only.
 """
 import argparse
 import html
@@ -56,6 +61,46 @@ def _evidence_chips(refs: list) -> str:
     return " ".join(f'<code class="chip">{_esc(r)}</code>' for r in refs)
 
 
+_SKILL_OVERRIDE_VALUES = ("off", "name-only", "user-invocable-only")
+
+
+def _setting_alt(key_path: list, value) -> dict:
+    return {"harness": "claude-code", "tier": "A", "type": "setting_change",
+            "payload": {"file": "settings.json", "key_path": key_path, "value": value}}
+
+
+def _alts_for(rec: dict) -> list:
+    """Canonical amend alternatives, computed ONLY from the typed rec (action fields,
+    evidence-ref ids, fixed enum values) — never from analyst free text. This is the
+    security property the dashboard offers as a menu; apply.py::cmd_decide re-validates
+    whatever gets picked (a canned alt or hand-edited JSON) regardless."""
+    a = rec.get("action") or {}
+    p = a.get("payload") or {}
+    kp = p.get("key_path") or []
+    refs = rec.get("evidence_refs") or []
+    alts = []
+    if a.get("type") == "setting_change" and len(kp) >= 2 and kp[0] == "enabledPlugins" and p.get("value") is False:
+        for ref in refs:
+            if isinstance(ref, str) and ref.startswith("inventory:skill:"):
+                name = ref[len("inventory:skill:"):]
+                alts.append({"label": f"name-only skill {name}",
+                             "action": _setting_alt(["skillOverrides", name], "name-only")})
+                alts.append({"label": f"off skill {name}",
+                             "action": _setting_alt(["skillOverrides", name], "off")})
+    elif a.get("type") == "setting_change" and len(kp) >= 2 and kp[0] == "skillOverrides":
+        skill, current = kp[1], p.get("value")
+        for v in _SKILL_OVERRIDE_VALUES:
+            if v != current:
+                alts.append({"label": f"skill {skill} → {v}",
+                             "action": _setting_alt(["skillOverrides", skill], v)})
+        for ref in refs:
+            if isinstance(ref, str) and ref.startswith("inventory:plugin:"):
+                pid = ref[len("inventory:plugin:"):]
+                alts.append({"label": f"disable plugin {pid}",
+                             "action": _setting_alt(["enabledPlugins", pid], False)})
+    return alts
+
+
 def _card_html(rec: dict, entry: dict | None) -> str:
     rid = rec["id"]
     tier = rec["action"]["tier"]
@@ -84,10 +129,17 @@ def _card_html(rec: dict, entry: dict | None) -> str:
             '<div class="toggle" role="group">'
             f'<label><input type="radio" name="choice-{_esc(rid)}" value="apply"> Apply</label>'
             f'<label><input type="radio" name="choice-{_esc(rid)}" value="reject"> Reject</label>'
+            f'<label><input type="radio" name="choice-{_esc(rid)}" value="amend"> Amend</label>'
             f'<label><input type="radio" name="choice-{_esc(rid)}" value="skip" checked> Skip</label>'
             '</div>'
             f'<input type="text" class="reason-input" id="reason-{_esc(rid)}" '
-            'style="display:none" placeholder="Reason for rejecting (required)">'
+            'style="display:none" placeholder="Reason (required for reject/amend)">'
+            f'<div class="amend-controls" id="amend-controls-{_esc(rid)}" style="display:none">'
+            f'<select class="amend-select" id="amend-select-{_esc(rid)}"></select>'
+            f'<textarea class="amend-custom" id="amend-custom-{_esc(rid)}" style="display:none" '
+            'placeholder="Replacement action JSON"></textarea>'
+            f'<p class="amend-warn" id="amend-warn-{_esc(rid)}" hidden>Invalid action JSON.</p>'
+            '</div>'
         )
     elif interactive and tier == "B":
         parts.append(
@@ -210,6 +262,13 @@ details pre { background: var(--neutral-bg); border-radius: 8px; padding: 0.6rem
 .reason-input { width: 100%; margin-top: 0.5rem; padding: 0.35rem 0.5rem; border-radius: 6px;
   border: 1px solid var(--border); background: var(--panel); color: var(--text); }
 .assist-label { display: inline-flex; gap: 0.4rem; margin-top: 0.5rem; font-size: 0.85rem; }
+.amend-controls { margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.amend-select { padding: 0.3rem 0.5rem; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text); }
+.amend-custom { width: 100%; min-height: 4.5rem; padding: 0.4rem 0.5rem; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text);
+  font: 0.8rem/1.4 ui-monospace, monospace; }
+.amend-warn { color: var(--warn); font-size: 0.78rem; margin: 0; }
 footer.dock {
   position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel);
   border-top: 1px solid var(--border); padding: 0.7rem 1.25rem;
@@ -233,6 +292,8 @@ _JS = """
   var DATA = JSON.parse(document.getElementById('data').textContent);
   var RUN_ID = DATA.run_id;
   var STORAGE_KEY = 'so-dash-' + RUN_ID;
+  var findingById = {};
+  DATA.findings.forEach(function (f) { findingById[f.id] = f; });
   var tierAIds = DATA.findings.filter(function (f) { return f.tier === 'A' && f.interactive; })
     .map(function (f) { return f.id; });
   var tierBIds = DATA.findings.filter(function (f) { return f.tier === 'B' && f.interactive; })
@@ -249,14 +310,62 @@ _JS = """
 
   var state = loadState();
 
+  // amend <select> options are DOM-built (createElement + textContent) from the
+  // JSON island's per-finding alts — never innerHTML, never free text.
+  function populateAmendSelect(id) {
+    var sel = document.getElementById('amend-select-' + id);
+    if (!sel || sel.options.length) return;
+    var alts = (findingById[id] && findingById[id].alts) || [];
+    alts.forEach(function (alt, idx) {
+      var opt = document.createElement('option');
+      opt.value = String(idx);
+      opt.textContent = alt.label;
+      sel.appendChild(opt);
+    });
+    var custom = document.createElement('option');
+    custom.value = 'custom';
+    custom.textContent = 'custom\\u2026';
+    sel.appendChild(custom);
+  }
+
+  function resolveAmend(id, sel, customVal) {
+    var alts = (findingById[id] && findingById[id].alts) || [];
+    if (sel !== 'custom') {
+      var alt = alts[parseInt(sel, 10)];
+      return alt ? { action: alt.action, valid: true } : { action: null, valid: false };
+    }
+    try {
+      var parsed = JSON.parse(customVal);
+      // must be a plain object (a real action shape), not a bare number/string/
+      // array/null — those parse fine but can never be a valid action and must
+      // not be silently treated as "valid" here (decide would refuse them anyway,
+      // but that refusal should never be masked as a client-side success)
+      var isPlainObject = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+      return isPlainObject ? { action: parsed, valid: true } : { action: null, valid: false };
+    } catch (e) {
+      return { action: null, valid: false };
+    }
+  }
+
   tierAIds.forEach(function (id) {
-    var choice = (state.decisions[id] && state.decisions[id].choice) || 'skip';
+    populateAmendSelect(id);
+    var saved = state.decisions[id] || {};
+    var choice = saved.choice || 'skip';
     var radio = document.querySelector('input[name="choice-' + id + '"][value="' + choice + '"]');
     if (radio) radio.checked = true;
     var reasonInput = document.getElementById('reason-' + id);
     if (reasonInput) {
-      reasonInput.value = (state.decisions[id] && state.decisions[id].reason) || '';
-      reasonInput.style.display = choice === 'reject' ? '' : 'none';
+      reasonInput.value = saved.reason || '';
+      reasonInput.style.display = (choice === 'reject' || choice === 'amend') ? '' : 'none';
+    }
+    var controls = document.getElementById('amend-controls-' + id);
+    if (controls) controls.style.display = choice === 'amend' ? '' : 'none';
+    var sel = document.getElementById('amend-select-' + id);
+    if (sel && saved.amendSel) sel.value = saved.amendSel;
+    var customArea = document.getElementById('amend-custom-' + id);
+    if (customArea) {
+      customArea.value = saved.amendCustom || '';
+      customArea.style.display = (sel && sel.value === 'custom') ? '' : 'none';
     }
   });
   tierBIds.forEach(function (id) {
@@ -270,8 +379,23 @@ _JS = """
       var checked = document.querySelector('input[name="choice-' + id + '"]:checked');
       var choice = checked ? checked.value : 'skip';
       var reasonInput = document.getElementById('reason-' + id);
-      if (reasonInput) reasonInput.style.display = choice === 'reject' ? '' : 'none';
-      decisions[id] = { choice: choice, reason: reasonInput ? reasonInput.value.trim() : '' };
+      if (reasonInput) reasonInput.style.display = (choice === 'reject' || choice === 'amend') ? '' : 'none';
+      var controls = document.getElementById('amend-controls-' + id);
+      if (controls) controls.style.display = choice === 'amend' ? '' : 'none';
+      var sel = document.getElementById('amend-select-' + id);
+      var amendSel = sel ? sel.value : '';
+      var customArea = document.getElementById('amend-custom-' + id);
+      if (customArea) customArea.style.display = (choice === 'amend' && amendSel === 'custom') ? '' : 'none';
+      var warn = document.getElementById('amend-warn-' + id);
+      var amendValid = true;
+      if (choice === 'amend') {
+        amendValid = resolveAmend(id, amendSel, customArea ? customArea.value : '').valid;
+      }
+      if (warn) warn.hidden = choice !== 'amend' || amendValid;
+      decisions[id] = {
+        choice: choice, reason: reasonInput ? reasonInput.value.trim() : '',
+        amendSel: amendSel, amendCustom: customArea ? customArea.value : ''
+      };
     });
     var assist = tierBIds.filter(function (id) {
       var cb = document.getElementById('assist-' + id);
@@ -282,6 +406,16 @@ _JS = """
     renderFooter();
   }
 
+  function amendEntries() {
+    return tierAIds.filter(function (id) {
+      return state.decisions[id] && state.decisions[id].choice === 'amend';
+    }).map(function (id) {
+      var d = state.decisions[id];
+      var resolved = resolveAmend(id, d.amendSel, d.amendCustom);
+      return { id: id, reason: d.reason, action: resolved.action, valid: resolved.valid && !!d.reason };
+    });
+  }
+
   function renderFooter() {
     var applyIds = tierAIds.filter(function (id) {
       return state.decisions[id] && state.decisions[id].choice === 'apply';
@@ -289,26 +423,38 @@ _JS = """
     var rejectEntries = tierAIds.filter(function (id) {
       return state.decisions[id] && state.decisions[id].choice === 'reject';
     }).map(function (id) { return { id: id, reason: state.decisions[id].reason }; });
-    var skipCount = tierAIds.length - applyIds.length - rejectEntries.length;
+    var amends = amendEntries();
+    var skipCount = tierAIds.length - applyIds.length - rejectEntries.length - amends.length;
     var missingReason = rejectEntries.some(function (r) { return !r.reason; });
+    var badAmend = amends.some(function (a) { return !a.valid; });
+    var blocked = missingReason || badAmend;
 
     document.getElementById('count-apply').textContent = applyIds.length;
     document.getElementById('count-reject').textContent = rejectEntries.length;
+    document.getElementById('count-amend').textContent = amends.length;
     document.getElementById('count-skip').textContent = skipCount;
     document.getElementById('count-assist').textContent = state.assist.length;
     document.getElementById('cmd-preview').textContent =
       '/self-optimize decide  (' + applyIds.length + ' apply, ' + rejectEntries.length +
-      ' reject, ' + state.assist.length + ' assist, ' + skipCount + ' skip)';
+      ' reject, ' + amends.length + ' amend, ' + state.assist.length + ' assist, ' + skipCount + ' skip)';
     var warn = document.getElementById('reject-warning');
-    warn.hidden = !missingReason;
-    document.getElementById('download-btn').disabled = missingReason;
-    document.getElementById('copy-btn').disabled = missingReason;
+    warn.hidden = !blocked;
+    var amendNote = document.getElementById('amend-note');
+    if (amendNote) amendNote.hidden = amends.length === 0;
+    document.getElementById('download-btn').disabled = blocked;
+    document.getElementById('copy-btn').disabled = blocked;
   }
 
   document.querySelectorAll('input[type=radio], input[type=checkbox]').forEach(function (el) {
     el.addEventListener('change', recompute);
   });
   document.querySelectorAll('.reason-input').forEach(function (el) {
+    el.addEventListener('input', recompute);
+  });
+  document.querySelectorAll('.amend-select').forEach(function (el) {
+    el.addEventListener('change', recompute);
+  });
+  document.querySelectorAll('.amend-custom').forEach(function (el) {
     el.addEventListener('input', recompute);
   });
 
@@ -320,7 +466,10 @@ _JS = """
       return state.decisions[id] && state.decisions[id].choice === 'reject';
     }).map(function (id) { return { id: id, reason: state.decisions[id].reason }; });
     if (reject.some(function (r) { return !r.reason; })) return;
-    var payload = { run_id: RUN_ID, apply: applyIds, reject: reject, assist: state.assist };
+    var amends = amendEntries();
+    if (amends.some(function (a) { return !a.valid; })) return;
+    var amend = amends.map(function (a) { return { id: a.id, reason: a.reason, action: a.action }; });
+    var payload = { run_id: RUN_ID, apply: applyIds, reject: reject, assist: state.assist, amend: amend };
     var blob = new Blob([JSON.stringify(payload, null, 1)], { type: 'application/json' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -338,6 +487,7 @@ _JS = """
       return state.decisions[id] && state.decisions[id].choice === 'reject';
     }).map(function (id) { return { id: id, reason: state.decisions[id].reason }; });
     if (rejectEntries.some(function (r) { return !r.reason; })) return;
+    // amend has no CLI flag: never encoded here, only via Download + /self-optimize decide
     var lines = [];
     if (applyIds.length) lines.push('/self-optimize apply ' + applyIds.join(','));
     var sanitized = false;
@@ -374,7 +524,8 @@ def render_dashboard(run_id, findings, dropped, verify_rows, cumulative, usage,
         "run_id": run_id,
         "findings": [
             {"id": f["id"], "tier": f.get("action", {}).get("tier"),
-             "interactive": (ledger_entries.get(f["id"]) or {}).get("status") in _OPEN_STATUSES}
+             "interactive": (ledger_entries.get(f["id"]) or {}).get("status") in _OPEN_STATUSES,
+             "alts": _alts_for(f)}
             for f in findings
         ],
     }
@@ -415,11 +566,13 @@ def render_dashboard(run_id, findings, dropped, verify_rows, cumulative, usage,
 <div class="counts">
 <span>apply <b id="count-apply">0</b></span>
 <span>reject <b id="count-reject">0</b></span>
+<span>amend <b id="count-amend">0</b></span>
 <span>skip <b id="count-skip">0</b></span>
 <span>assist <b id="count-assist">0</b></span>
 </div>
 <div class="preview"><code id="cmd-preview">/self-optimize decide</code></div>
-<div class="warning" id="reject-warning" hidden>Give every rejection a reason before downloading or copying.</div>
+<div class="warning" id="reject-warning" hidden>Give every rejection and amendment a reason before downloading or copying, and fix any invalid amendment JSON.</div>
+<div class="warning" id="amend-note" hidden>Amendments aren't expressible as a command &mdash; download decisions.json and run /self-optimize decide.</div>
 <div class="actions">
 <button id="download-btn">Download decisions.json</button>
 <button id="copy-btn">Copy command</button>

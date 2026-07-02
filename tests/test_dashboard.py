@@ -70,6 +70,52 @@ class TestRenderDashboard(unittest.TestCase):
         self.assertIn("Applied changes: outcomes", html)
         self.assertIn("ccc333", html)
 
+    def test_plugin_disable_rec_produces_name_only_skill_alt_in_island(self):
+        rec = {"id": "ddd444", "title": "Disable bloat plugin", "category": "bloat",
+               "impact": {"ordinal": "med"}, "risk": "low", "delta_tokens": 500,
+               "evidence_refs": ["inventory:plugin:bloatplug", "inventory:skill:dusty"],
+               "metric": {"key": "base_context_est", "direction": "down", "scope": "global"},
+               "action": {"tier": "A", "type": "setting_change",
+                         "payload": {"file": "settings.json",
+                                     "key_path": ["enabledPlugins", "bloatplug"], "value": False}}}
+        html = dashboard.render_dashboard("r1", [rec], DROPPED, [], [], USAGE, {})
+        island = json.loads(
+            html.split('<script type="application/json" id="data">', 1)[1].split("</script>", 1)[0])
+        finding = next(f for f in island["findings"] if f["id"] == "ddd444")
+        labels = [a["label"] for a in finding["alts"]]
+        self.assertIn("name-only skill dusty", labels)
+        self.assertIn("off skill dusty", labels)
+        name_only = next(a for a in finding["alts"] if a["label"] == "name-only skill dusty")
+        self.assertEqual(name_only["action"]["payload"]["key_path"], ["skillOverrides", "dusty"])
+        self.assertEqual(name_only["action"]["payload"]["value"], "name-only")
+
+    def test_amend_control_and_custom_json_path_in_js(self):
+        html = dashboard.render_dashboard("r1", FINDINGS, DROPPED, [], [], USAGE, {})
+        self.assertIn('value="amend"', html)
+        self.assertIn('id="amend-select-aaa111"', html)
+        self.assertIn('id="amend-custom-aaa111"', html)
+        self.assertIn("JSON.parse(customVal)", html)   # try/catch custom-action path
+        self.assertIn("amend has no CLI flag", html)   # copy-command never encodes amend
+
+    def test_custom_amend_json_must_be_plain_object(self):
+        # a parseable-but-non-object custom amend JSON (number/string/array/null)
+        # must not be treated as a valid amend action client-side
+        html = dashboard.render_dashboard("r1", FINDINGS, DROPPED, [], [], USAGE, {})
+        self.assertIn("Array.isArray(parsed)", html)
+
+    def test_alts_never_carry_analyst_free_text(self):
+        rec = {"id": "eee555", "title": "SECRET-FREE-TEXT-MARKER", "category": "bloat",
+               "impact": {"ordinal": "med"}, "risk": "SECRET-FREE-TEXT-MARKER",
+               "delta_tokens": 500,
+               "evidence_refs": ["inventory:plugin:bloatplug", "inventory:skill:dusty"],
+               "metric": {"key": "base_context_est", "direction": "down", "scope": "global"},
+               "action": {"tier": "A", "type": "setting_change",
+                         "payload": {"file": "settings.json",
+                                     "key_path": ["enabledPlugins", "bloatplug"], "value": False}}}
+        alts = dashboard._alts_for(rec)
+        self.assertNotIn("SECRET-FREE-TEXT-MARKER", json.dumps(alts))
+        self.assertTrue(alts)   # sanity: alts were actually produced
+
 
 class TestDashboardMain(unittest.TestCase):
     def test_main_writes_run_and_latest_600(self):

@@ -16,6 +16,7 @@ import templates  # noqa: E402
 import ledger as ledger_mod  # noqa: E402
 import metriclib  # noqa: E402
 import schema as so_schema  # noqa: E402
+import synth  # noqa: E402
 
 
 def _sha(p: Path):
@@ -72,10 +73,17 @@ def cmd_apply(ids, state, data_root, evidence):
             continue
         try:
             edits = templates.render(rec["action"], Path(data_root), extra_roots)
-        except ValueError as err:
+        except (ValueError, KeyError, TypeError) as err:
+            # KeyError/TypeError alongside ValueError: templates.render indexes
+            # payload fields directly (p["value"], p["path"], dict lookups keyed by
+            # key_path elements, re.escape(p["key"]), Path(p["path"]), ...), so a
+            # malformed payload — schema/guard only check shape, not every field's
+            # presence or type — must fail cleanly here rather than crash the whole
+            # decide/apply run.
             ledger_mod.append(lpath, {"id": rid, "status": "apply_failed",
-                                      "errors": [str(err)], "evidence_hash": e.get("evidence_hash")})
-            print(f"{rid}: refused by policy — {err}")
+                                      "errors": [f"malformed payload: {err}"],
+                                      "evidence_hash": e.get("evidence_hash")})
+            print(f"{rid}: refused by policy — malformed payload: {err}")
             continue
         # UTC timestamp (not local date): same-day re-applies must not share a dir,
         # or the second apply would overwrite the true pre-state snapshot
@@ -103,15 +111,18 @@ def cmd_apply(ids, state, data_root, evidence):
                 continue
             for m in meta:
                 m["post_sha"] = _sha(Path(m["path"]))
-        except OSError as err:
+        except (OSError, TypeError) as err:
+            # TypeError alongside OSError: a malformed payload can carry non-str
+            # `content` (path.write_text(content) then raises TypeError, not OSError)
             try:
                 _restore(meta, snap)
             except OSError as rerr:
                 print(f"{rid}: RESTORE FAILED ({rerr}) — recover manually from {snap}")
+            kind = "io" if isinstance(err, OSError) else "write"
             ledger_mod.append(lpath, {"id": rid, "status": "apply_failed",
-                                      "errors": [f"io: {err}"],
+                                      "errors": [f"{kind}: {err}"],
                                       "evidence_hash": e.get("evidence_hash")})
-            print(f"{rid}: APPLY FAILED (io) — {err}")
+            print(f"{rid}: APPLY FAILED ({kind}) — {err}")
             continue
         val, n = metriclib.compute_metric(rec["metric"], sessions, inv)
         samples = metriclib.metric_samples(rec["metric"], sessions, inv)[-50:]
@@ -211,21 +222,150 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
                     if isinstance(r, dict) and isinstance(r.get("id"), str)
                     and isinstance(r.get("reason"), str)]
     assist_ids = [i for i in (data.get("assist") or []) if isinstance(i, str)]
+    # only structurally-anchored entries (has a string id) get scoped below; a
+    # totally shapeless entry has no id to authorize or report against
+    amend_raw = [a for a in (data.get("amend") or [])
+                if isinstance(a, dict) and isinstance(a.get("id"), str)]
     refused = ([i for i in apply_ids if i not in run_ids]
                + [r["id"] for r in reject_items if r["id"] not in run_ids]
-               + [i for i in assist_ids if i not in run_ids])
+               + [i for i in assist_ids if i not in run_ids]
+               + [a["id"] for a in amend_raw if a["id"] not in run_ids])
     apply_ids = [i for i in apply_ids if i in run_ids]
     reject_items = [r for r in reject_items if r["id"] in run_ids]
     assist_ids = [i for i in assist_ids if i in run_ids]
+    amend_raw = [a for a in amend_raw if a["id"] in run_ids]
+    # in-run but malformed (blank reason / non-dict action) amend entries must be
+    # visible, not silently vanish — decisions.json is hand-editable, semi-trusted
+    # input, and a "check me, not trust me" gate that drops entries without a trace
+    # defeats the audit trail the decision log promises
+    amend_items, amend_malformed = [], []
+    for a in amend_raw:
+        reason_ok = isinstance(a.get("reason"), str) and a["reason"].strip()
+        action_ok = isinstance(a.get("action"), dict)
+        if reason_ok and action_ok:
+            amend_items.append(a)
+        else:
+            why = ([] if reason_ok else ["amend requires a non-empty reason"]) + (
+                [] if action_ok else ["amend action must be an object"])
+            amend_malformed.append({"id": a["id"], "reason": "; ".join(why)})
+    # dedupe by id: the loop below reloads the ledger fresh each iteration (so a
+    # repeated id would just be re-evaluated against its own prior outcome rather
+    # than corrupting anything), but a spurious duplicate "not amendable" refusal
+    # for an id already amended earlier in this same batch is still misleading —
+    # keep only the first occurrence (mirrors cmd_apply's matching ids dedupe above)
+    seen_amend, deduped = set(), []
+    for a in amend_items:
+        if a["id"] not in seen_amend:
+            seen_amend.add(a["id"])
+            deduped.append(a)
+    amend_items = deduped
     print(f"decisions: {dfile} (run {run_id}: {len(apply_ids)} apply, "
-          f"{len(reject_items)} reject, {len(assist_ids)} assist)")
+          f"{len(reject_items)} reject, {len(assist_ids)} assist, {len(amend_items)} amend)")
     if refused:
         print(f"REFUSED (not part of run {ev_run}): {', '.join(sorted(set(refused)))}")
+    lpath = Path(state) / "state" / "ledger.jsonl"
     if apply_ids:
         cmd_apply(apply_ids, state, data_root, evidence)
     for r in reject_items:
         cmd_reject(r["id"], r["reason"], state)
-    led = ledger_mod.load(Path(state) / "state" / "ledger.jsonl")
+
+    # amend: reject the original in favor of a different, re-validated action. The
+    # replacement action is user-supplied from a semi-trusted Downloads file, so it
+    # gets the exact same schema + guard gate as any analyst-proposed action — never
+    # trusted just because it arrived in a decisions.json for the right run.
+    amended, amend_refused = [], list(amend_malformed)
+    if amend_items:
+        inv_f = Path(evidence) / "inventory.json"
+        inv = json.loads(inv_f.read_text()) if inv_f.exists() else None
+        extra_roots = so_schema.derive_extra_roots(inv, data_root)
+        for item in amend_items:
+            aid, reason, action = item["id"], item["reason"], item["action"]
+            # reload fresh every iteration, not once before the loop: a rec_id
+            # collision can make one item's replacement land on another item's id
+            # (e.g. amending A into "disable plugin X" mints exactly finding B's
+            # id) — a stale snapshot would let a later item in this same batch
+            # amend that now-applied id as if it were still merely proposed
+            e = ledger_mod.load(lpath).get(aid)
+            if not e or e.get("status") not in ("proposed", "approved"):
+                amend_refused.append({"id": aid, "reason":
+                                      f"not amendable (status={e['status'] if e else 'unknown'})"})
+                continue
+            replacement = dict(e["rec"])
+            replacement["action"] = action
+            replacement["title"] = "Amended: " + e["rec"].get("title", "")
+            errs = so_schema.validate_rec(replacement)
+            # amend always auto-applies its replacement, so tier-B (report-only,
+            # never executed) can't be what "amended" means here even though guard()
+            # legitimately allows tier-B actions through for the ordinary tier-B path
+            if not errs and action.get("tier") != "A":
+                errs = ["amend replacement must be a tier-A action"]
+            if not errs:
+                # guard()/rec_id assume a reasonably well-typed payload (true for
+                # synth's own analyst-generated recs); amend feeds it a hand-typed
+                # decisions.json instead, so a payload shaped like {"key_path": []}
+                # or with unhashable/non-path elements can raise AttributeError/
+                # TypeError/KeyError/IndexError deep in dict/Path lookups — must
+                # fail cleanly into amend_refused, never crash the whole decide run
+                try:
+                    if not synth.guard(replacement, Path(data_root), extra_roots):
+                        errs = ["guard refused the amended action"]
+                except (AttributeError, TypeError, KeyError, IndexError) as gerr:
+                    errs = [f"malformed action payload: {gerr}"]
+            if errs:
+                # leave the original untouched: refused amends must be retryable
+                amend_refused.append({"id": aid, "reason": "; ".join(errs)})
+                continue
+            new_id = so_schema.rec_id(replacement)
+            # rec_id hashes only category|action.type|payload, so a replacement can
+            # collide with an existing ledger id: the original itself (a no-op
+            # amend — refuse outright), or an unrelated id from any prior run. The
+            # ledger is append-only/last-entry-wins, so blindly appending under a
+            # colliding id would clobber that id's real history (status, snapshot,
+            # baseline) — UNLESS the existing entry is only a dangling proposed/
+            # apply_failed remnant (nothing of value committed under it yet, e.g. a
+            # previous failed attempt at this exact amend), in which case retrying
+            # must be allowed or "fix and retry" would be a permanent dead end.
+            if new_id == aid:
+                amend_refused.append({"id": aid, "reason":
+                                      "replacement action is identical to the original — nothing to amend"})
+                continue
+            existing = ledger_mod.load(lpath).get(new_id)
+            if existing and existing.get("status") not in ("proposed", "apply_failed"):
+                amend_refused.append({"id": aid, "reason":
+                                      f"replacement action collides with existing ledger id {new_id} "
+                                      f"(status={existing['status']}) — refused to avoid corrupting "
+                                      "ledger state"})
+                continue
+            replacement["id"] = new_id
+            replacement["evidence_hash"] = e.get("evidence_hash")
+            replacement.pop("delta_tokens", None)
+            replacement.pop("prior_rejection", None)
+            # apply the replacement BEFORE touching the original: only a replacement
+            # that actually reaches "applied" earns rejecting the original — a
+            # render/smoke/io failure must leave the original untouched, not rejected
+            # out from under a failed amend
+            ledger_mod.append(lpath, {"id": new_id, "status": "proposed", "rec": replacement,
+                                      "evidence_hash": replacement["evidence_hash"]})
+            cmd_apply([new_id], state, data_root, evidence)
+            if (ledger_mod.load(lpath).get(new_id) or {}).get("status") == "applied":
+                cmd_reject(aid, f"amended: {reason}", state)
+                amended.append({"orig": aid, "new": new_id, "title": replacement["title"]})
+            else:
+                amend_refused.append({"id": aid, "reason":
+                                      "replacement action failed to apply — original left untouched"})
+    # outside the `if amend_items:` gate: amend_refused can be non-empty purely
+    # from malformed entries even when amend_items itself is empty, and that must
+    # still be visible on the console, not just in the returned dict / decision log
+    if amended:
+        print("AMENDED (original rejected, replacement applied):")
+        for item in amended:
+            print(f"- {item['orig']} -> {item['new']}: {item['title']}")
+    if amend_refused:
+        print("AMEND REFUSED (left untouched — fix and retry):")
+        for item in amend_refused:
+            print(f"- {item['id']}: {item['reason']}")
+
+    led = ledger_mod.load(lpath)
     applied = [i for i in apply_ids if (led.get(i) or {}).get("status") == "applied"]
     assist = []
     for aid in assist_ids:
@@ -237,7 +377,8 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
         for item in assist:
             print(f"- {item['id']}: {item['title']} [{item['payload_type']}]")
     result = {"applied": applied, "rejected": [r["id"] for r in reject_items],
-              "assist": assist, "refused": sorted(set(refused))}
+              "assist": assist, "refused": sorted(set(refused)),
+              "amended": amended, "amend_refused": amend_refused}
     # durable log: the decisions.json in ~/Downloads is transient, this survives.
     # applies/rejects are already committed to the ledger above, so a write failure
     # here must not raise — it would lose the result dict the caller acts on.
@@ -252,6 +393,8 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
         "source_file": str(dfile), "apply": result["applied"],
         "reject": [{"id": r["id"], "reason": r["reason"]} for r in reject_items],
         "refused": result["refused"], "assist": assist,
+        "amend": [{"id": a["id"], "reason": a["reason"], "action": a["action"]} for a in amend_items],
+        "amended": amended, "amend_refused": amend_refused,
     }, indent=2) + "\n"
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
