@@ -84,6 +84,57 @@ class TestApply(unittest.TestCase):
         self.assertEqual(e["status"], "apply_failed")
         self.assertTrue(any("io:" in x for x in e.get("errors", [])))
 
+    def test_file_replace_apply_and_rollback_roundtrip(self):
+        agent_dir = self.data / "agents"
+        agent_dir.mkdir()
+        target = agent_dir / "helper.md"
+        target.write_text("---\nname: helper\nmodel: sonnet\n---\nold body\n")
+        rec = setting_rec()
+        rec["action"] = {"harness": "claude-code", "tier": "A", "type": "file_replace",
+                         "payload": {"path": str(target),
+                                     "content": "---\nname: helper\nmodel: sonnet\n---\nnew body\n"}}
+        ledger.append(self.lpath, {"id": "r3", "status": "proposed", "rec": rec,
+                                   "evidence_hash": "e3"})
+        apply_mod.cmd_apply(["r3"], self.state, self.data, self.ev)
+        self.assertIn("new body", target.read_text())
+        self.assertEqual(ledger.load(self.lpath)["r3"]["status"], "applied")
+        apply_mod.cmd_rollback("r3", self.state)
+        self.assertIn("old body", target.read_text())
+        self.assertEqual(ledger.load(self.lpath)["r3"]["status"], "rolled_back")
+
+    def test_file_replace_must_exist_fails_apply(self):
+        rec = setting_rec()
+        rec["action"] = {"harness": "claude-code", "tier": "A", "type": "file_replace",
+                         "payload": {"path": str(self.data / "agents" / "ghost.md"), "content": "c"}}
+        ledger.append(self.lpath, {"id": "r4", "status": "proposed", "rec": rec,
+                                   "evidence_hash": "e4"})
+        apply_mod.cmd_apply(["r4"], self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["r4"]["status"], "apply_failed")
+
+    def test_file_replace_traversal_reject_fails_apply(self):
+        rec = setting_rec()
+        rec["action"] = {"harness": "claude-code", "tier": "A", "type": "file_replace",
+                         "payload": {"path": "/etc/passwd", "content": "c"}}
+        ledger.append(self.lpath, {"id": "r5", "status": "proposed", "rec": rec,
+                                   "evidence_hash": "e5"})
+        apply_mod.cmd_apply(["r5"], self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["r5"]["status"], "apply_failed")
+
+    def test_memory_root_file_create_via_inventory_extra_roots(self):
+        mem = self.data.parent / "mem"
+        mem.mkdir()
+        (self.ev / "inventory.json").write_text(json.dumps(
+            {"settings": {"autoMemoryDirectory": str(mem)}}))
+        rec = setting_rec()
+        rec["action"] = {"harness": "claude-code", "tier": "A", "type": "file_create",
+                         "payload": {"path": str(mem / "new-note.md"),
+                                     "content": "---\nname: new-note\n---\nbody\n"}}
+        ledger.append(self.lpath, {"id": "r6", "status": "proposed", "rec": rec,
+                                   "evidence_hash": "e6"})
+        apply_mod.cmd_apply(["r6"], self.state, self.data, self.ev)
+        self.assertTrue((mem / "new-note.md").exists())
+        self.assertEqual(ledger.load(self.lpath)["r6"]["status"], "applied")
+
 
 if __name__ == "__main__":
     unittest.main()

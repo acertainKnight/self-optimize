@@ -46,6 +46,11 @@ def cmd_apply(ids, state, data_root, evidence):
     sessions = json.loads(sessions_file.read_text())["sessions"]
     inv_f = Path(evidence) / "inventory.json"
     inv = json.loads(inv_f.read_text()) if inv_f.exists() else None
+    extra_roots = None
+    if inv:
+        amd = inv.get("settings", {}).get("autoMemoryDirectory")
+        if amd:
+            extra_roots = [amd]
     # staggered-apply warning: changes sharing a metric are unattributable to verify
     shared = {}
     for rid in ids:
@@ -68,7 +73,7 @@ def cmd_apply(ids, state, data_root, evidence):
                   f"apply manually (see the report)")
             continue
         try:
-            edits = templates.render(rec["action"], Path(data_root))
+            edits = templates.render(rec["action"], Path(data_root), extra_roots)
         except ValueError as err:
             ledger_mod.append(lpath, {"id": rid, "status": "apply_failed",
                                       "errors": [str(err)], "evidence_hash": e.get("evidence_hash")})

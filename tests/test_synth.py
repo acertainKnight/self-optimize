@@ -68,6 +68,34 @@ class TestSynth(unittest.TestCase):
         self.assertFalse(synth.guard(sib, DATA))
         self.assertFalse(synth.guard(trav, DATA))
 
+    def test_guard_file_replace_and_workflows_root(self):
+        replace_ok = {"action": {"type": "file_replace", "tier": "A",
+                                 "payload": {"path": "/fakehome/.claude/skills/x/SKILL.md", "content": "c"}}}
+        workflow_ok = {"action": {"type": "file_create", "tier": "A",
+                                  "payload": {"path": "/fakehome/.claude/workflows/w.md", "content": "c"}}}
+        self.assertTrue(synth.guard(replace_ok, DATA))
+        self.assertTrue(synth.guard(workflow_ok, DATA))
+
+    def test_guard_extra_roots_accepted_and_traversal_rejected(self):
+        memory_ok = {"action": {"type": "file_create", "tier": "A",
+                                "payload": {"path": "/mem/notes/x.md", "content": "c"}}}
+        memory_trav = {"action": {"type": "file_create", "tier": "A",
+                                  "payload": {"path": "/mem/notes/../../etc/x.md", "content": "c"}}}
+        self.assertFalse(synth.guard(memory_ok, DATA))                       # no extra_roots -> rejected
+        self.assertTrue(synth.guard(memory_ok, DATA, extra_roots=["/mem/notes"]))
+        self.assertFalse(synth.guard(memory_trav, DATA, extra_roots=["/mem/notes"]))
+
+    def test_synthesize_threads_extra_roots_to_guard(self):
+        rec = bloat_rec()
+        rec["category"] = "memory"
+        rec["action"] = {"harness": "claude-code", "tier": "A", "type": "file_create",
+                         "payload": {"path": "/mem/notes/new.md", "content": "c"}}
+        findings, dropped = synth.synthesize([rec], EV, {}, DATA)
+        self.assertEqual(findings, [])
+        self.assertEqual(dropped["guard"], 1)
+        findings, dropped = synth.synthesize([rec], EV, {}, DATA, extra_roots=["/mem/notes"])
+        self.assertEqual(len(findings), 1)
+
     def test_fenced_output_parses(self):
         import json, tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:

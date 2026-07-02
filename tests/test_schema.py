@@ -53,6 +53,18 @@ class TestSchema(unittest.TestCase):
         self.assertEqual(fm, {"name": "foo", "model": "haiku"})
         self.assertEqual(schema.parse_frontmatter("no frontmatter"), {})
 
+    def test_action_types_and_categories_extended(self):
+        self.assertIn("file_replace", schema.ACTION_TYPES_A)
+        self.assertEqual(len(schema.CATEGORIES), 14)
+        for cat in ("skill-improve", "new-agent", "new-workflow", "new-plugin", "memory"):
+            self.assertIn(cat, schema.CATEGORIES)
+        r = good_rec()
+        r["action"] = {"harness": "claude-code", "tier": "A", "type": "file_replace",
+                       "payload": {"path": "/x/agents/y.md", "content": "z"}}
+        self.assertEqual(schema.validate_rec(r), [])
+        r["action"]["tier"] = "B"
+        self.assertTrue(any("tier" in e for e in schema.validate_rec(r)))
+
 
 if __name__ == "__main__":
     unittest.main()

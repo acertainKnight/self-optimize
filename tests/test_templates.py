@@ -39,6 +39,56 @@ class TestTemplates(unittest.TestCase):
                                  self.root)
         self.assertEqual(edits[0][0].name, "shadow.md")
 
+    def test_file_replace_overwrites_existing_and_requires_prior_file(self):
+        agent = self.root / "agents" / "helper.md"
+        edits = templates.render({"type": "file_replace",
+                                  "payload": {"path": str(agent),
+                                              "content": "---\nname: helper\nmodel: sonnet\n---\nnew body\n"}},
+                                 self.root)
+        self.assertEqual(edits[0][1], "---\nname: helper\nmodel: sonnet\n---\nnew body\n")
+        with self.assertRaises(ValueError):   # target must already exist
+            templates.render({"type": "file_replace",
+                              "payload": {"path": str(self.root / "agents" / "ghost.md"),
+                                          "content": "c"}}, self.root)
+
+    def test_file_create_and_replace_into_workflows_root(self):
+        (self.root / "workflows").mkdir()
+        wf = self.root / "workflows" / "existing.md"
+        wf.write_text("---\nname: existing\n---\nold\n")
+        edits = templates.render({"type": "file_create",
+                                  "payload": {"path": str(self.root / "workflows" / "new.md"),
+                                              "content": "---\nname: new\n---\nbody\n"}}, self.root)
+        self.assertEqual(edits[0][0].name, "new.md")
+        edits = templates.render({"type": "file_replace",
+                                  "payload": {"path": str(wf), "content": "---\nname: existing\n---\nnew\n"}},
+                                 self.root)
+        self.assertIn("new", edits[0][1])
+
+    def test_extra_roots_accepted_for_file_create_and_replace(self):
+        with tempfile.TemporaryDirectory() as mem:
+            existing = pathlib.Path(mem) / "old.md"
+            existing.write_text("---\nname: old\n---\nbody\n")
+            edits = templates.render({"type": "file_create",
+                                      "payload": {"path": str(pathlib.Path(mem) / "new.md"),
+                                                  "content": "---\nname: new\n---\nbody\n"}},
+                                     self.root, extra_roots=[mem])
+            self.assertEqual(edits[0][0].name, "new.md")
+            edits = templates.render({"type": "file_replace",
+                                      "payload": {"path": str(existing), "content": "---\nname: old\n---\nnew\n"}},
+                                     self.root, extra_roots=[mem])
+            self.assertIn("new", edits[0][1])
+
+    def test_extra_roots_traversal_rejected(self):
+        with tempfile.TemporaryDirectory() as mem:
+            with self.assertRaises(ValueError):
+                templates.render({"type": "file_create",
+                                  "payload": {"path": str(pathlib.Path(mem) / ".." / "evil.md"),
+                                              "content": "c"}}, self.root, extra_roots=[mem])
+            with self.assertRaises(ValueError):   # not in extra_roots at all when omitted
+                templates.render({"type": "file_create",
+                                  "payload": {"path": str(pathlib.Path(mem) / "x.md"), "content": "c"}},
+                                 self.root)
+
     def test_policy_violations_raise(self):
         with self.assertRaises(ValueError):   # forbidden settings root
             templates.render({"type": "setting_change",

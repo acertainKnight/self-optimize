@@ -16,22 +16,26 @@ def _model_ok(v: str) -> bool:
     return v in KNOWN_MODELS or v.startswith("claude-")
 
 
-def _require_user_md(f: Path, data_root: Path):
+def _require_user_md(f: Path, data_root: Path, extra_roots=None):
     # lexical normalization (collapses ..) + separator boundary; deliberately NOT
     # resolve() — that follows symlinks and would break legitimately symlinked skills
     target = os.path.normpath(str(f))
     ok = False
-    for sub in ("skills", "agents"):
+    for sub in ("skills", "agents", "workflows"):
         base = os.path.normpath(str(data_root / sub))
         if target == base or target.startswith(base + os.sep):
             ok = True
+    for root in (extra_roots or []):
+        base = os.path.normpath(str(Path(root)))
+        if target == base or target.startswith(base + os.sep):
+            ok = True
     if not ok:
-        raise ValueError(f"path outside {data_root}/skills|agents: {f}")
+        raise ValueError(f"path outside sanctioned roots under {data_root}: {f}")
     if not target.endswith(".md"):
         raise ValueError(f"not a .md file: {f}")
 
 
-def render(action: dict, data_root: Path) -> list:
+def render(action: dict, data_root: Path, extra_roots=None) -> list:
     t = action["type"]
     p = action.get("payload", {})
     data_root = Path(data_root)
@@ -69,9 +73,15 @@ def render(action: dict, data_root: Path) -> list:
         return [(f, head + rest)]
     if t == "file_create":
         f = Path(p["path"]).expanduser()
-        _require_user_md(f, data_root)
+        _require_user_md(f, data_root, extra_roots)
         if f.exists():
             raise ValueError(f"refusing to overwrite existing file: {f}")
+        return [(f, p["content"])]
+    if t == "file_replace":
+        f = Path(p["path"]).expanduser()
+        _require_user_md(f, data_root, extra_roots)
+        if not f.exists():
+            raise ValueError(f"cannot replace nonexistent file: {f}")
         return [(f, p["content"])]
     raise ValueError(f"not a tier-A action: {t}")
 

@@ -68,7 +68,18 @@ def _under(f: str, data_root: Path, sub: str) -> bool:
     return target == base or target.startswith(base + os.sep)
 
 
-def guard(rec: dict, data_root: Path) -> bool:
+def _in_sanctioned_root(f: str, data_root: Path, extra_roots=None) -> bool:
+    if any(_under(f, data_root, sub) for sub in ("skills", "agents", "workflows")):
+        return True
+    target = os.path.normpath(str(Path(f).expanduser()))
+    for root in (extra_roots or []):
+        base = os.path.normpath(str(Path(root)))
+        if target == base or target.startswith(base + os.sep):
+            return True
+    return False
+
+
+def guard(rec: dict, data_root: Path, extra_roots=None) -> bool:
     a = rec["action"]
     p = a.get("payload", {})
     t = a["type"]
@@ -78,10 +89,9 @@ def guard(rec: dict, data_root: Path) -> bool:
     if t == "frontmatter_edit":
         return ((_under(p.get("file", ""), data_root, "skills") or _under(p.get("file", ""), data_root, "agents"))
                 and p.get("key") in {"model", "disable-model-invocation", "description"})
-    if t == "file_create":
+    if t in ("file_create", "file_replace"):
         f = p.get("path", "")
-        return ((_under(f, data_root, "skills") or _under(f, data_root, "agents"))
-                and str(f).endswith(".md"))
+        return _in_sanctioned_root(f, data_root, extra_roots) and str(f).endswith(".md")
     return t in so_schema.ACTION_TYPES_B  # tier B is report-only: rendered, never executed
 
 
@@ -106,7 +116,7 @@ def tier1_delta(rec: dict, ev: dict):
     return None
 
 
-def synthesize(analyst_recs: list, ev: dict, led_entries: dict, data_root: Path):
+def synthesize(analyst_recs: list, ev: dict, led_entries: dict, data_root: Path, extra_roots=None):
     dropped = {"invalid": 0, "citations": 0, "guard": 0, "suppressed": []}
     seen, findings = set(), []
     for rec in analyst_recs:
@@ -116,7 +126,7 @@ def synthesize(analyst_recs: list, ev: dict, led_entries: dict, data_root: Path)
         if not all(check_citation(r, ev) for r in rec["evidence_refs"]):
             dropped["citations"] += 1
             continue
-        if not guard(rec, data_root):
+        if not guard(rec, data_root, extra_roots):
             dropped["guard"] += 1
             continue
         rec["id"] = so_schema.rec_id(rec)
@@ -158,7 +168,11 @@ def main(argv=None):
     lpath = state / "state" / "ledger.jsonl"
     led = ledger_mod.load(lpath)
     recs = [r for f in a.analyst for r in load_analyst_output(f)]
-    findings, dropped = synthesize(recs, ev, led, data_root)
+    extra_roots = None
+    amd = ev.get("inventory", {}).get("settings", {}).get("autoMemoryDirectory")
+    if amd:
+        extra_roots = [amd]
+    findings, dropped = synthesize(recs, ev, led, data_root, extra_roots)
     for rec in findings:
         ledger_mod.append(lpath, {"id": rec["id"], "status": "proposed", "rec": rec,
                                   "evidence_hash": rec["evidence_hash"]})

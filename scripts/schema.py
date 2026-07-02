@@ -6,10 +6,11 @@ import json
 EVIDENCE_VERSION = "1"
 HARNESS = "claude-code"
 
-ACTION_TYPES_A = {"setting_change", "frontmatter_edit", "file_create"}
+ACTION_TYPES_A = {"setting_change", "frontmatter_edit", "file_create", "file_replace"}
 ACTION_TYPES_B = {"diff", "manual"}
 CATEGORIES = {"bloat", "model-routing", "skill-edit", "new-skill", "claude-md",
-              "hooks", "permissions", "settings", "waste"}
+              "hooks", "permissions", "settings", "waste",
+              "skill-improve", "new-agent", "new-workflow", "new-plugin", "memory"}
 METRIC_KEYS = {"tokens_per_session", "correction_rate", "duplicate_read_rate",
                "permission_stalls", "base_context_est", "unused_surface_count",
                "model_output_tokens", "none"}
