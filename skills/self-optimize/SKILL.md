@@ -2,7 +2,7 @@
 name: self-optimize
 description: Run the self-optimize loop — mine Claude Code transcripts + config, verify previously applied changes, and produce an evidence-cited optimization report. Also handles apply/reject/rollback subcommands.
 disable-model-invocation: true
-argument-hint: "[--stats-only] [--since YYYY-MM-DD] [--max-budget N] | apply <id[,id...]> | reject <id> [reason] | rollback <id>"
+argument-hint: "[--stats-only] [--since YYYY-MM-DD] [--max-budget N] | apply <id[,id...]> | reject <id> [reason] | rollback <id> | decide [path]"
 allowed-tools: Bash, Read, Write, Agent
 ---
 
@@ -18,12 +18,21 @@ Definitions used below:
 
 ## Subcommands (run and stop)
 
-If the arguments begin with `apply`, `reject`, or `rollback`, run the matching command,
-echo its output verbatim to the user, and stop:
+If the arguments begin with `apply`, `reject`, `rollback`, or `decide`, run the matching
+command, echo its output verbatim to the user, then regenerate the dashboard (see the
+last bullet below), and stop:
 
 - `apply <ids>` → `python3 SCRIPTS/apply.py apply --ids <ids> --state STATE --data-root DATA_ROOT --evidence <newest dir under STATE/evidence>`
 - `reject <id> [reason]` → `python3 SCRIPTS/apply.py reject --id <id> --reason "<reason>" --state STATE`
 - `rollback <id>` → `python3 SCRIPTS/apply.py rollback --id <id> --state STATE`
+- `decide [path]` → `python3 SCRIPTS/apply.py decide [path] --state STATE --data-root DATA_ROOT --evidence <newest dir under STATE/evidence>`
+  (with no path, it picks up the newest `self-optimize-decisions-*.json` from
+  `~/Downloads`). Then present each listed assisted-work item to the user and
+  implement together upon their approval (tier B stays human-supervised).
+- After any of the four commands above: regenerate the dashboard so it reflects the
+  new ledger state — `python3 SCRIPTS/dashboard.py --evidence <newest dir under
+  STATE/evidence> --state STATE --run-id <that dir's name>` — and print the
+  `DASHBOARD:` line plus an `open <path>` hint.
 
 ## Full run
 
@@ -59,7 +68,9 @@ echo its output verbatim to the user, and stop:
    `python3 SCRIPTS/report.py --evidence EV --state STATE --run-id RUN_ID [--analyst-tokens miner=<n>,auditor=<m>]`
    (build the value from the tokens noted in step 4, e.g. `miner=8000,auditor=4300`)
    Show the user: the report path, the outcomes section verdicts if any, and the
-   printed top-5 with their `/self-optimize apply <id>` / `reject <id>` hints.
+   printed top-5 with their `/self-optimize apply <id>` / `reject <id>` hints. Then run
+   `python3 SCRIPTS/dashboard.py --evidence EV --state STATE --run-id RUN_ID` and print
+   the `DASHBOARD:` line plus an `open <path>` hint.
 
 Rules for the runner: never read raw transcripts yourself — everything flows through
 the evidence pack; do not exceed the three analyst agents; if any script exits non-zero,

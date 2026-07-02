@@ -21,10 +21,28 @@ Personal-first and private. See SECURITY.md for the threat model before running.
     /self-optimize apply <id>       # apply a tier-A finding (snapshot + smoke-check)
     /self-optimize reject <id> "reason"   # suppress it, with memory of why
     /self-optimize rollback <id>    # restore the snapshot
+    /self-optimize decide [path]    # apply/reject the decisions.json from the dashboard
 
 Reports land in `<config-dir>/self-optimize/reports/` (override `report_dir` in
 `<config-dir>/self-optimize/config.json` — note reports contain redacted transcript
 excerpts, so think before pointing this at a synced folder).
+
+## Reviewing in the dashboard
+
+Every full run also writes `<report_dir>/latest.html` (and a per-run
+`<run-id>.html`) — a self-contained page, open it straight from disk
+(`open <config-dir>/self-optimize/reports/latest.html`). For each tier-A finding
+pick Apply / Reject / Skip (Reject needs a reason); check any tier-B item you want
+help with as "Select for assisted work". Your choices persist locally as you go.
+When ready, click **Download decisions.json** (or **Copy command** for a quick
+apply/reject one-liner instead), then run:
+
+    /self-optimize decide
+
+with no argument it picks up the newest `self-optimize-decisions-*.json` in
+`~/Downloads` automatically; pass a path to use a specific file. It applies/rejects
+your tier-A picks and lists the tier-B items you selected for assisted work — those
+are never run automatically, you do them together with Claude afterward.
 
 ## Instances
 

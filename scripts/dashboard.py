@@ -1,0 +1,466 @@
+"""HTML decision dashboard: one self-contained file rendering a run's findings so a
+human can decide apply/reject/assist without touching the CLI, then hand the decision
+back to `self-optimize decide`.
+
+decisions.json schema (downloaded from the dashboard, consumed by `apply.py decide`):
+    {
+      "run_id": str,
+      "apply": [id, ...],                       # tier-A ids to apply
+      "reject": [{"id": str, "reason": str}],   # tier-A ids to reject, reason required
+      "assist": [id, ...]                       # tier-B ids selected for human-supervised work
+    }
+Unknown top-level keys are ignored by the consumer; ids must be strings; run_id must
+match the evidence run being decided against or the file is refused.
+
+Security: every analyst-derived string (title, category, risk, evidence refs, payload
+text) is html.escape()'d before interpolation into the document. The one piece of data
+the page's JS needs (run id + per-finding id/tier/status) is embedded as inert JSON via
+a `<script type="application/json" id="data">` island, never string-concatenated into
+executable JS; `<` is escaped to `\\u003c` in that JSON text so a title or payload
+value can never close the surrounding <script> tag.
+"""
+import argparse
+import html
+import json
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
+
+import ledger as ledger_mod
+from report import _cumulative_savings, _impact, _num
+
+_BADGE_CLASS = {
+    "applied": "good", "verified": "good",
+    "rejected": "warn", "regressed": "warn", "apply_failed": "warn",
+    "rolled_back": "neutral", "inconclusive": "neutral",
+}
+_OPEN_STATUSES = (None, "proposed", "approved")
+
+
+def _esc(x) -> str:
+    return html.escape(str(x))
+
+
+def _json_island(data: dict) -> str:
+    return json.dumps(data, ensure_ascii=False).replace("<", "\\u003c")
+
+
+def _payload_body(payload: dict) -> str:
+    if not isinstance(payload, dict):
+        return json.dumps(payload, indent=2)
+    body = payload.get("diff") or payload.get("description") or payload.get("content")
+    return body if body else json.dumps(payload, indent=2)
+
+
+def _evidence_chips(refs: list) -> str:
+    return " ".join(f'<code class="chip">{_esc(r)}</code>' for r in refs)
+
+
+def _card_html(rec: dict, entry: dict | None) -> str:
+    rid = rec["id"]
+    tier = rec["action"]["tier"]
+    status = (entry or {}).get("status")
+    interactive = status in _OPEN_STATUSES
+    payload = rec["action"].get("payload", {})
+    parts = [
+        f'<div class="card tier-{tier.lower()}{"" if interactive else " inert"}" data-id="{_esc(rid)}">',
+        '<div class="card-head">',
+        f'<span class="badge cat">{_esc(rec["category"])}</span>',
+        f'<span class="impact">{_esc(_impact(rec))}</span>',
+    ]
+    if not interactive:
+        cls = _BADGE_CLASS.get(status, "neutral")
+        parts.append(f'<span class="badge {cls}">{_esc(status)}</span>')
+    parts.append("</div>")
+    parts.append(f'<h3>{_esc(rec["title"])} <code class="chip id">{_esc(rid)}</code></h3>')
+    if rec.get("prior_rejection"):
+        parts.append(f'<p class="note">previously rejected: {_esc(rec["prior_rejection"])} '
+                      f'&mdash; evidence has changed since</p>')
+    parts.append(f'<p class="evidence">{_evidence_chips(rec["evidence_refs"])}</p>')
+    parts.append(f'<p class="risk">{_esc(rec["risk"])}</p>')
+    parts.append(f'<details><summary>payload</summary><pre>{_esc(_payload_body(payload))}</pre></details>')
+    if interactive and tier == "A":
+        parts.append(
+            '<div class="toggle" role="group">'
+            f'<label><input type="radio" name="choice-{_esc(rid)}" value="apply"> Apply</label>'
+            f'<label><input type="radio" name="choice-{_esc(rid)}" value="reject"> Reject</label>'
+            f'<label><input type="radio" name="choice-{_esc(rid)}" value="skip" checked> Skip</label>'
+            '</div>'
+            f'<input type="text" class="reason-input" id="reason-{_esc(rid)}" '
+            'style="display:none" placeholder="Reason for rejecting (required)">'
+        )
+    elif interactive and tier == "B":
+        parts.append(
+            f'<label class="assist-label"><input type="checkbox" id="assist-{_esc(rid)}"> '
+            'Select for assisted work</label>'
+        )
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
+def _outcomes_table(verify_rows: list) -> str:
+    if not verify_rows:
+        return ""
+    rows = []
+    for v in verify_rows:
+        cls = _BADGE_CLASS.get(v.get("verdict"), "neutral")
+        verdict_cell = f'<span class="badge {cls}">{_esc(v.get("verdict"))}</span>'
+        if v.get("verdict") == "regressed":
+            verdict_cell += f' <code class="chip">/self-optimize rollback {_esc(v["id"])}</code>'
+        rows.append(
+            "<tr>"
+            f'<td><code class="chip id">{_esc(v.get("id"))}</code></td>'
+            f'<td>{_esc(v.get("title"))}</td>'
+            f'<td>{_esc(v.get("metric"))}</td>'
+            f'<td>{verdict_cell}</td>'
+            f'<td>{_esc(_num(v.get("baseline")))}</td>'
+            f'<td>{_esc(_num(v.get("value")))}</td>'
+            f'<td>{_esc(v.get("n"))}</td>'
+            "</tr>"
+        )
+    return (
+        '<section class="outcomes"><h2>Applied changes: outcomes</h2>'
+        '<div class="table-wrap"><table><thead><tr>'
+        "<th>id</th><th>title</th><th>metric</th><th>verdict</th>"
+        "<th>baseline</th><th>now</th><th>n</th></tr></thead><tbody>"
+        + "".join(rows) + "</tbody></table></div></section>"
+    )
+
+
+def _stat_tiles(findings: list, verify_rows: list, cumulative: list, usage: dict) -> str:
+    tier_a = [f for f in findings if f.get("action", {}).get("tier") == "A"]
+    tier_b = [f for f in findings if f.get("action", {}).get("tier") == "B"]
+    base_ctx = usage.get("base_context_est")
+    base_ctx_text = f"{base_ctx:,}" if isinstance(base_ctx, (int, float)) else "-"
+    changes = sum(c for _, (_, c) in cumulative)
+    cum_detail = " · ".join(f"{_esc(m)}: {_esc(_num(d))}" for m, (d, c) in cumulative) or "no verified changes yet"
+    counts = Counter(v.get("verdict") for v in verify_rows)
+    verdict_detail = " · ".join(f"{n} {_esc(k)}" for k, n in counts.items() if n) or "no applied changes yet"
+    return (
+        '<section class="stats">'
+        f'<div class="tile"><div class="tile-n">{base_ctx_text}</div>'
+        '<div class="tile-l">base context (est.)</div></div>'
+        f'<div class="tile"><div class="tile-n">{changes}</div>'
+        f'<div class="tile-l">verified changes (cumulative)</div><div class="tile-d">{cum_detail}</div></div>'
+        f'<div class="tile"><div class="tile-n">{len(findings)}</div>'
+        f'<div class="tile-l">findings</div><div class="tile-d">{len(tier_a)} tier A &middot; {len(tier_b)} tier B</div></div>'
+        f'<div class="tile"><div class="tile-n">{len(verify_rows)}</div>'
+        f'<div class="tile-l">applied-outcome verdicts</div><div class="tile-d">{verdict_detail}</div></div>'
+        "</section>"
+    )
+
+
+_CSS = """
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f8; --panel: #ffffff; --text: #1a1a1e; --muted: #6b6b76;
+  --border: #e2e2e6; --accent: #2563eb; --accent-ink: #ffffff;
+  --warn: #b45309; --warn-bg: #fef3c7; --good: #15803d; --good-bg: #dcfce7;
+  --neutral-bg: #ececef;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16161a; --panel: #1f1f24; --text: #ececef; --muted: #9a9aa4;
+    --border: #2e2e35; --accent: #60a5fa; --accent-ink: #0b1220;
+    --warn: #fbbf24; --warn-bg: #3f2d0a; --good: #4ade80; --good-bg: #0f2e1a;
+    --neutral-bg: #2a2a31;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 0 0 6rem 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.wrap { max-width: 1100px; margin: 0 auto; padding: 2rem 1.25rem; }
+header h1 { font-size: 1.4rem; margin: 0 0 0.25rem 0; }
+header .meta { color: var(--muted); font-size: 0.85rem; margin: 0 0 1.5rem 0; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.75rem; margin-bottom: 1.75rem; }
+.tile { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem 1rem; }
+.tile-n { font-size: 1.6rem; font-weight: 600; }
+.tile-l { color: var(--muted); font-size: 0.8rem; margin-top: 0.15rem; }
+.tile-d { color: var(--muted); font-size: 0.75rem; margin-top: 0.35rem; word-break: break-word; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+section.outcomes, section.findings { background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+h2 { font-size: 1.05rem; margin-top: 0; }
+.cards { display: grid; gap: 0.85rem; }
+.card { border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem 1rem; background: var(--bg); }
+.card.tier-a { border-left: 4px solid var(--accent); }
+.card.tier-b { border-left: 4px solid var(--muted); }
+.card.inert { opacity: 0.72; }
+.card-head { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.3rem; flex-wrap: wrap; }
+.card h3 { font-size: 0.98rem; margin: 0.1rem 0 0.5rem 0; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.badge { font-size: 0.72rem; padding: 0.12rem 0.5rem; border-radius: 999px; background: var(--neutral-bg); }
+.badge.cat { text-transform: uppercase; letter-spacing: 0.02em; }
+.badge.good { background: var(--good-bg); color: var(--good); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.neutral { background: var(--neutral-bg); color: var(--muted); }
+.impact { color: var(--muted); font-size: 0.8rem; }
+.chip { background: var(--neutral-bg); border-radius: 6px; padding: 0.05rem 0.4rem; font-size: 0.78rem; }
+.chip.id { font-size: 0.72rem; }
+p.evidence { margin: 0.3rem 0; }
+p.risk { color: var(--muted); font-size: 0.85rem; margin: 0.3rem 0; }
+p.note { color: var(--warn); font-size: 0.8rem; margin: 0.3rem 0; }
+details { margin: 0.4rem 0; }
+details pre { background: var(--neutral-bg); border-radius: 8px; padding: 0.6rem 0.75rem;
+  overflow-x: auto; font-size: 0.78rem; white-space: pre-wrap; word-break: break-word; }
+.toggle { display: flex; gap: 0.9rem; margin-top: 0.6rem; font-size: 0.85rem; }
+.reason-input { width: 100%; margin-top: 0.5rem; padding: 0.35rem 0.5rem; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+.assist-label { display: inline-flex; gap: 0.4rem; margin-top: 0.5rem; font-size: 0.85rem; }
+footer.dock {
+  position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel);
+  border-top: 1px solid var(--border); padding: 0.7rem 1.25rem;
+  display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem;
+}
+footer.dock .counts { display: flex; gap: 0.75rem; color: var(--muted); }
+footer.dock .preview { flex: 1 1 260px; min-width: 0; }
+footer.dock code#cmd-preview { display: block; overflow-x: auto; white-space: nowrap;
+  background: var(--neutral-bg); border-radius: 6px; padding: 0.3rem 0.5rem; }
+footer.dock .warning { color: var(--warn); }
+footer.dock button {
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  border-radius: 8px; padding: 0.45rem 0.85rem; cursor: pointer; font: inherit;
+}
+footer.dock button#download-btn { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+footer.dock button:disabled { opacity: 0.5; cursor: not-allowed; }
+"""
+
+_JS = """
+(function () {
+  var DATA = JSON.parse(document.getElementById('data').textContent);
+  var RUN_ID = DATA.run_id;
+  var STORAGE_KEY = 'so-dash-' + RUN_ID;
+  var tierAIds = DATA.findings.filter(function (f) { return f.tier === 'A' && f.interactive; })
+    .map(function (f) { return f.id; });
+  var tierBIds = DATA.findings.filter(function (f) { return f.tier === 'B' && f.interactive; })
+    .map(function (f) { return f.id; });
+
+  function loadState() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return { decisions: {}, assist: [] };
+      var parsed = JSON.parse(raw);
+      return { decisions: parsed.decisions || {}, assist: parsed.assist || [] };
+    } catch (e) { return { decisions: {}, assist: [] }; }
+  }
+
+  var state = loadState();
+
+  tierAIds.forEach(function (id) {
+    var choice = (state.decisions[id] && state.decisions[id].choice) || 'skip';
+    var radio = document.querySelector('input[name="choice-' + id + '"][value="' + choice + '"]');
+    if (radio) radio.checked = true;
+    var reasonInput = document.getElementById('reason-' + id);
+    if (reasonInput) {
+      reasonInput.value = (state.decisions[id] && state.decisions[id].reason) || '';
+      reasonInput.style.display = choice === 'reject' ? '' : 'none';
+    }
+  });
+  tierBIds.forEach(function (id) {
+    var cb = document.getElementById('assist-' + id);
+    if (cb) cb.checked = state.assist.indexOf(id) !== -1;
+  });
+
+  function recompute() {
+    var decisions = {};
+    tierAIds.forEach(function (id) {
+      var checked = document.querySelector('input[name="choice-' + id + '"]:checked');
+      var choice = checked ? checked.value : 'skip';
+      var reasonInput = document.getElementById('reason-' + id);
+      if (reasonInput) reasonInput.style.display = choice === 'reject' ? '' : 'none';
+      decisions[id] = { choice: choice, reason: reasonInput ? reasonInput.value.trim() : '' };
+    });
+    var assist = tierBIds.filter(function (id) {
+      var cb = document.getElementById('assist-' + id);
+      return cb && cb.checked;
+    });
+    state = { decisions: decisions, assist: assist };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    renderFooter();
+  }
+
+  function renderFooter() {
+    var applyIds = tierAIds.filter(function (id) {
+      return state.decisions[id] && state.decisions[id].choice === 'apply';
+    });
+    var rejectEntries = tierAIds.filter(function (id) {
+      return state.decisions[id] && state.decisions[id].choice === 'reject';
+    }).map(function (id) { return { id: id, reason: state.decisions[id].reason }; });
+    var skipCount = tierAIds.length - applyIds.length - rejectEntries.length;
+    var missingReason = rejectEntries.some(function (r) { return !r.reason; });
+
+    document.getElementById('count-apply').textContent = applyIds.length;
+    document.getElementById('count-reject').textContent = rejectEntries.length;
+    document.getElementById('count-skip').textContent = skipCount;
+    document.getElementById('count-assist').textContent = state.assist.length;
+    document.getElementById('cmd-preview').textContent =
+      '/self-optimize decide  (' + applyIds.length + ' apply, ' + rejectEntries.length +
+      ' reject, ' + state.assist.length + ' assist, ' + skipCount + ' skip)';
+    var warn = document.getElementById('reject-warning');
+    warn.hidden = !missingReason;
+    document.getElementById('download-btn').disabled = missingReason;
+    document.getElementById('copy-btn').disabled = missingReason;
+  }
+
+  document.querySelectorAll('input[type=radio], input[type=checkbox]').forEach(function (el) {
+    el.addEventListener('change', recompute);
+  });
+  document.querySelectorAll('.reason-input').forEach(function (el) {
+    el.addEventListener('input', recompute);
+  });
+
+  document.getElementById('download-btn').addEventListener('click', function () {
+    var applyIds = tierAIds.filter(function (id) {
+      return state.decisions[id] && state.decisions[id].choice === 'apply';
+    });
+    var reject = tierAIds.filter(function (id) {
+      return state.decisions[id] && state.decisions[id].choice === 'reject';
+    }).map(function (id) { return { id: id, reason: state.decisions[id].reason }; });
+    if (reject.some(function (r) { return !r.reason; })) return;
+    var payload = { run_id: RUN_ID, apply: applyIds, reject: reject, assist: state.assist };
+    var blob = new Blob([JSON.stringify(payload, null, 1)], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'self-optimize-decisions-' + RUN_ID + '.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+
+  document.getElementById('copy-btn').addEventListener('click', function () {
+    var applyIds = tierAIds.filter(function (id) {
+      return state.decisions[id] && state.decisions[id].choice === 'apply';
+    });
+    var rejectEntries = tierAIds.filter(function (id) {
+      return state.decisions[id] && state.decisions[id].choice === 'reject';
+    }).map(function (id) { return { id: id, reason: state.decisions[id].reason }; });
+    if (rejectEntries.some(function (r) { return !r.reason; })) return;
+    var lines = [];
+    if (applyIds.length) lines.push('/self-optimize apply ' + applyIds.join(','));
+    rejectEntries.forEach(function (r) {
+      lines.push('/self-optimize reject ' + r.id + ' "' + r.reason.replace(/"/g, '\\\\"') + '"');
+    });
+    navigator.clipboard.writeText(lines.join('\\n'));
+  });
+
+  renderFooter();
+})();
+"""
+
+
+def render_dashboard(run_id, findings, dropped, verify_rows, cumulative, usage,
+                      ledger_entries, generated_at=None) -> str:
+    generated_at = generated_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    tier_a = [f for f in findings if f.get("action", {}).get("tier") == "A"]
+    tier_b = [f for f in findings if f.get("action", {}).get("tier") == "B"]
+    dropped = dropped or {}
+    suppressed = dropped.get("suppressed") or []
+    dropped_line = (f"{dropped.get('invalid', 0)} invalid &middot; "
+                    f"{dropped.get('citations', 0)} failed citations &middot; "
+                    f"{dropped.get('guard', 0)} guard &middot; "
+                    f"{len(suppressed)} suppressed by ledger")
+
+    data_island = {
+        "run_id": run_id,
+        "findings": [
+            {"id": f["id"], "tier": f.get("action", {}).get("tier"),
+             "interactive": (ledger_entries.get(f["id"]) or {}).get("status") in _OPEN_STATUSES}
+            for f in findings
+        ],
+    }
+
+    parts = [
+        "<div class=\"wrap\">",
+        "<header>",
+        f'<h1>self-optimize &mdash; {_esc(run_id)}</h1>',
+        f'<p class="meta">Generated {_esc(generated_at)} &middot; '
+        f'findings dropped: {dropped_line}</p>',
+        "</header>",
+        _stat_tiles(findings, verify_rows, cumulative, usage),
+        _outcomes_table(verify_rows),
+        '<section class="findings">',
+        "<h2>Tier A &mdash; apply now</h2>",
+        '<div class="cards">',
+    ]
+    parts += [_card_html(rec, ledger_entries.get(rec["id"])) for rec in tier_a] or ["<p>None.</p>"]
+    parts += ["</div>", "<h2>Tier B &mdash; assisted work</h2>", '<div class="cards">']
+    parts += [_card_html(rec, ledger_entries.get(rec["id"])) for rec in tier_b] or ["<p>None.</p>"]
+    parts += ["</div>", "</section>", "</div>"]
+
+    body = "\n".join(parts)
+    data_json = _json_island(data_island)
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>self-optimize dashboard &mdash; {_esc(run_id)}</title>
+<style>{_CSS}</style>
+</head>
+<body>
+{body}
+<script type="application/json" id="data">{data_json}</script>
+<footer class="dock">
+<div class="counts">
+<span>apply <b id="count-apply">0</b></span>
+<span>reject <b id="count-reject">0</b></span>
+<span>skip <b id="count-skip">0</b></span>
+<span>assist <b id="count-assist">0</b></span>
+</div>
+<div class="preview"><code id="cmd-preview">/self-optimize decide</code></div>
+<div class="warning" id="reject-warning" hidden>Give every rejection a reason before downloading or copying.</div>
+<div class="actions">
+<button id="download-btn">Download decisions.json</button>
+<button id="copy-btn">Copy command</button>
+</div>
+</footer>
+<script>{_JS}</script>
+</body>
+</html>
+"""
+
+
+def main(argv=None):
+    import so_config
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--evidence", required=True)
+    ap.add_argument("--state", default=None)
+    ap.add_argument("--run-id", required=True)
+    ap.add_argument("--out", default=None)
+    a = ap.parse_args(argv)
+    _, state = so_config.resolve(None, a.state)
+    cfg = so_config.load_config(state)
+    evdir = Path(a.evidence)
+    fdata = json.loads((evdir / "findings.json").read_text())
+    usage = json.loads((evdir / "usage.json").read_text())
+    verify_rows = []
+    vf = evdir / "verify.json"
+    if vf.exists():
+        verify_rows = json.loads(vf.read_text())["rows"]
+    inv_f = evdir / "inventory.json"
+    if inv_f.exists():
+        usage = dict(usage)
+        usage["base_context_est"] = json.loads(inv_f.read_text()).get("base_context_est")
+    ledger_entries = ledger_mod.load(state / "state" / "ledger.jsonl")
+    cumulative = _cumulative_savings(ledger_entries)
+    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    doc = render_dashboard(a.run_id, fdata["findings"], fdata["dropped"], verify_rows,
+                           cumulative, usage, ledger_entries, generated_at)
+    rdir = Path(a.out) if a.out else Path(cfg["report_dir"])
+    rdir.mkdir(parents=True, exist_ok=True)
+    out = rdir / f"{a.run_id}.html"
+    out.write_text(doc)
+    out.chmod(0o600)
+    latest = rdir / "latest.html"
+    latest.write_text(doc)
+    latest.chmod(0o600)
+    print(f"DASHBOARD: {out}")
+    print(f"open {out}")
+
+
+if __name__ == "__main__":
+    main()

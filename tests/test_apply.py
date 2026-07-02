@@ -1,4 +1,4 @@
-import json, sys, pathlib, tempfile, unittest
+import json, sys, pathlib, tempfile, unittest, unittest.mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 import apply as apply_mod
 import ledger
@@ -143,6 +143,94 @@ class TestApply(unittest.TestCase):
         apply_mod.cmd_apply(["r6"], self.state, self.data, self.ev)
         self.assertTrue((mem / "new-note.md").exists())
         self.assertEqual(ledger.load(self.lpath)["r6"]["status"], "applied")
+
+
+def assist_rec():
+    return {"title": "Trim CLAUDE.md", "category": "claude-md",
+            "evidence_refs": ["usage:totals.sessions"],
+            "impact": {"ordinal": "high"}, "risk": "med",
+            "metric": {"key": "none"},
+            "action": {"harness": "claude-code", "tier": "B", "type": "diff",
+                       "payload": {"file": "/x", "diff": "- old\n+ new"}}}
+
+
+class TestDecide(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = pathlib.Path(self.tmp.name)
+        self.state, self.data, self.ev = base / "state", base / "claude", base / "ev"
+        self.downloads = base / "downloads"
+        for d in (self.state, self.data, self.ev, self.downloads):
+            d.mkdir()
+        (self.data / "settings.json").write_text(json.dumps({"model": "opusplan"}))
+        (self.ev / "sessions.json").write_text(json.dumps(
+            {"sessions": [{"started_at": "2026-06-01", "corrections_count": 2,
+                           "input_tokens": 1, "output_tokens": 1}]}))
+        self.lpath = self.state / "state" / "ledger.jsonl"
+        ledger.append(self.lpath, {"id": "r1", "status": "proposed", "rec": setting_rec(),
+                                   "evidence_hash": "e1"})
+        ledger.append(self.lpath, {"id": "r2", "status": "proposed", "rec": setting_rec(),
+                                   "evidence_hash": "e2"})
+        ledger.append(self.lpath, {"id": "r3", "status": "proposed", "rec": assist_rec(),
+                                   "evidence_hash": "e3"})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _decisions(self, **overrides):
+        # run_id must match the evidence dir's basename or decide refuses the file
+        payload = {"run_id": "ev", "apply": ["r1"],
+                   "reject": [{"id": "r2", "reason": "not now"}], "assist": ["r3"]}
+        payload.update(overrides)
+        return payload
+
+    def test_decide_applies_rejects_and_reports_assist(self):
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        # "ghost" never applies (unknown id) — must not be reported as applied
+        dfile.write_text(json.dumps(self._decisions(apply=["r1", "ghost"])))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        led = ledger.load(self.lpath)
+        self.assertEqual(led["r1"]["status"], "applied")
+        self.assertEqual(led["r2"]["status"], "rejected")
+        self.assertEqual(led["r2"]["reason"], "not now")
+        self.assertEqual(result["applied"], ["r1"])
+        self.assertEqual(result["assist"], [{"id": "r3", "title": "Trim CLAUDE.md",
+                                             "payload_type": "diff"}])
+        # tier-B payload never executed: no file at the diff's target path
+        self.assertFalse(pathlib.Path("/x").exists())
+
+    def test_run_id_mismatch_refuses_file(self):
+        dfile = self.downloads / "self-optimize-decisions-other.json"
+        dfile.write_text(json.dumps(self._decisions(run_id="other-run")))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        self.assertEqual(result, {})
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
+
+    def test_missing_file_prints_clean_message_and_returns_empty(self):
+        missing = self.downloads / "nope.json"
+        result = apply_mod.cmd_decide(str(missing), self.state, self.data, self.ev)
+        self.assertEqual(result, {})
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
+
+    def test_newest_in_downloads_selected_when_no_path_given(self):
+        older = self.downloads / "self-optimize-decisions-old.json"
+        newer = self.downloads / "self-optimize-decisions-new.json"
+        older.write_text(json.dumps(self._decisions(apply=["r2"], reject=[], assist=[])))
+        import os
+        older_time = older.stat().st_mtime
+        newer.write_text(json.dumps(self._decisions(apply=["r1"], reject=[], assist=[])))
+        os.utime(newer, (older_time + 10, older_time + 10))  # deterministic mtime ordering
+        with unittest.mock.patch.object(apply_mod, "_downloads_dir", return_value=self.downloads):
+            apply_mod.cmd_decide(None, self.state, self.data, self.ev)
+        # the newer file (apply r1) should have been used, not the older (apply r2)
+        led = ledger.load(self.lpath)
+        self.assertEqual(led["r1"]["status"], "applied")
+        self.assertEqual(led["r2"]["status"], "proposed")
+
+    def test_no_downloads_match_prints_clean_message(self):
+        with unittest.mock.patch.object(apply_mod, "_downloads_dir", return_value=self.downloads):
+            result = apply_mod.cmd_decide(None, self.state, self.data, self.ev)
+        self.assertEqual(result, {})
 
 
 if __name__ == "__main__":

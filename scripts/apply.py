@@ -153,6 +153,72 @@ def cmd_reject(rid, reason, state):
     print(f"{rid}: rejected ({reason})")
 
 
+def _downloads_dir() -> Path:
+    return Path.home() / "Downloads"
+
+
+def _find_decisions_file(path_or_none, downloads_dir: Path):
+    if path_or_none:
+        return Path(path_or_none)
+    if not downloads_dir.exists():
+        return None
+    matches = sorted(downloads_dir.glob("self-optimize-decisions-*.json"),
+                     key=lambda p: p.stat().st_mtime)
+    return matches[-1] if matches else None
+
+
+def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
+    """Apply/reject the decisions dumped by the HTML dashboard's "Download
+    decisions.json" button, then report the tier-B assist selections — those are
+    NEVER executed here, only surfaced for the calling Claude session to carry out
+    with the user (see docs/evidence-schema.md for the decisions.json shape)."""
+    dfile = _find_decisions_file(path_or_none, _downloads_dir())
+    if dfile is None or not dfile.exists():
+        msg = (f"decisions file not found: {path_or_none}" if path_or_none else
+               "no self-optimize-decisions-*.json found in ~/Downloads — "
+               "download decisions.json from the dashboard first")
+        print(msg)
+        return {}
+    try:
+        data = json.loads(dfile.read_text())
+    except json.JSONDecodeError:
+        print(f"{dfile}: not valid JSON")
+        return {}
+    if not isinstance(data, dict):
+        print(f"{dfile}: expected a JSON object")
+        return {}
+    # provenance gate: ~/Downloads is browser-writable, and even an honest file can
+    # be stale — refuse anything not minted for the evidence run we're acting on
+    run_id, ev_run = data.get("run_id"), Path(evidence).name
+    if run_id != ev_run:
+        print(f"{dfile}: decisions are for run {run_id!r} but the evidence run is "
+              f"{ev_run!r} — regenerate the dashboard for the current run and re-download")
+        return {}
+    apply_ids = [i for i in (data.get("apply") or []) if isinstance(i, str)]
+    reject_items = [r for r in (data.get("reject") or [])
+                    if isinstance(r, dict) and isinstance(r.get("id"), str)
+                    and isinstance(r.get("reason"), str)]
+    assist_ids = [i for i in (data.get("assist") or []) if isinstance(i, str)]
+    print(f"decisions: {dfile} (run {run_id}: {len(apply_ids)} apply, "
+          f"{len(reject_items)} reject, {len(assist_ids)} assist)")
+    if apply_ids:
+        cmd_apply(apply_ids, state, data_root, evidence)
+    for r in reject_items:
+        cmd_reject(r["id"], r["reason"], state)
+    led = ledger_mod.load(Path(state) / "state" / "ledger.jsonl")
+    applied = [i for i in apply_ids if (led.get(i) or {}).get("status") == "applied"]
+    assist = []
+    for aid in assist_ids:
+        rec = (led.get(aid) or {}).get("rec") or {}
+        assist.append({"id": aid, "title": rec.get("title", "(unknown)"),
+                       "payload_type": (rec.get("action") or {}).get("type", "?")})
+    if assist:
+        print("ASSISTED WORK SELECTED (tier B — complete these with the user):")
+        for item in assist:
+            print(f"- {item['id']}: {item['title']} [{item['payload_type']}]")
+    return {"applied": applied, "rejected": [r["id"] for r in reject_items], "assist": assist}
+
+
 def main(argv=None):
     import so_config
     ap = argparse.ArgumentParser()
@@ -166,7 +232,10 @@ def main(argv=None):
     a3 = sub.add_parser("reject")
     a3.add_argument("--id", required=True)
     a3.add_argument("--reason", default="")
-    for x in (a1, a2, a3):
+    a4 = sub.add_parser("decide")
+    a4.add_argument("path", nargs="?", default=None)
+    a4.add_argument("--evidence", required=True)
+    for x in (a1, a2, a3, a4):
         x.add_argument("--state", default=None)
         x.add_argument("--data-root", default=None)
     a = ap.parse_args(argv)
@@ -176,6 +245,8 @@ def main(argv=None):
                   state, data_root, a.evidence)
     elif a.cmd == "rollback":
         cmd_rollback(a.id, state, a.force)
+    elif a.cmd == "decide":
+        cmd_decide(a.path, state, data_root, a.evidence)
     else:
         cmd_reject(a.id, a.reason, state)
 
