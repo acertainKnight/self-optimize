@@ -53,17 +53,16 @@ outputs; the report footer records actual analyst tokens per run.
 
 ## Running it on a schedule
 
-Not enabled by default — wire up whichever fits your setup:
+Not enabled by default — schedule it locally with a plain crontab line (adjust the
+time and `CLAUDE_CONFIG_DIR` for the instance you want optimized):
 
-- Claude Code's built-in scheduler: `/schedule weekly /self-optimize` runs a full
-  loop once a week as a routine.
-- A plain crontab line (adjust the time and `CLAUDE_CONFIG_DIR` for the instance
-  you want optimized):
+    0 9 * * MON  CLAUDE_CONFIG_DIR=$HOME/.claude claude -p "/self-optimize" >> $HOME/.claude/self-optimize/cron.log 2>&1
 
-      0 9 * * MON  CLAUDE_CONFIG_DIR=$HOME/.claude claude -p "/self-optimize" >> $HOME/.claude/self-optimize/cron.log 2>&1
+Note: Claude Code's `/schedule` cloud routines are NOT suitable here — they execute
+in the cloud, without access to this machine's transcripts and state. Schedule locally.
 
-Either way it's the same full run described above — collect, verify, two analysts,
-report — so review the report and `apply`/`reject` by hand; nothing auto-applies.
+It's the same full run described above — collect, verify, two analysts, report —
+so review the report and `apply`/`reject` by hand; nothing auto-applies.
 
 ## What it reads and writes
 
