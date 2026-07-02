@@ -32,6 +32,15 @@ class TestPack(unittest.TestCase):
         pack3 = collect.collect_corpus(self.root, "2027-01-01T00:00:00Z", ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
         self.assertEqual(pack3["usage"]["totals"]["sessions"], 0)
 
+    def test_same_filename_across_projects_counts_are_isolated(self):
+        root = pathlib.Path(self.tmp) / "data2"
+        (root / "projects" / "-a").mkdir(parents=True)
+        (root / "projects" / "-b").mkdir(parents=True)
+        shutil.copy(FIX, root / "projects" / "-a" / "same.jsonl")
+        shutil.copy(FIX, root / "projects" / "-b" / "same.jsonl")
+        pack = collect.collect_corpus(root, None, ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
+        self.assertEqual([s["corrections_count"] for s in pack["sessions"]], [1, 1])
+
     def test_write_pack_and_metrics(self):
         out = pathlib.Path(self.tmp) / "ev"
         state = pathlib.Path(self.tmp) / "state"

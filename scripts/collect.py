@@ -173,12 +173,13 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
             e["last_used"] = max(e["last_used"] or "", s["ended_at"] or "")
             if project not in e["projects"]:
                 e["projects"].append(project)
-        for c in s.pop("corrections"):
+        corrs = s.pop("corrections")
+        for c in corrs:
             samples.append({"session": s["id"], "project": project, "ts": c["ts"],
                             "kind": "correction", "pattern": c["pattern"],
                             "user_text": c["user_text"],
                             "prior_assistant_text": c["prior_assistant_text"]})
-        s["corrections_count"] = len([x for x in samples if x["session"] == s["id"]])
+        s["corrections_count"] = len(corrs)
         sessions.append(s)
 
     samples = _cap_samples(samples, sessions, caps)
