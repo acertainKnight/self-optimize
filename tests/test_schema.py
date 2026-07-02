@@ -75,6 +75,15 @@ class TestSchema(unittest.TestCase):
         self.assertIsNone(schema.derive_extra_roots({}))
         self.assertIsNone(schema.derive_extra_roots({"settings": "corrupt"}))
 
+    def test_derive_extra_roots_rejects_overlap_with_data_root(self):
+        data_root = "/fakehome/.claude"
+        for amd in ("/fakehome/.claude/skills", "/fakehome/.claude/skills/notes"):
+            self.assertIsNone(schema.derive_extra_roots(
+                {"settings": {"autoMemoryDirectory": amd}}, data_root))
+        self.assertEqual(schema.derive_extra_roots(
+            {"settings": {"autoMemoryDirectory": "/fakehome/.claude/memory"}}, data_root),
+            ["/fakehome/.claude/memory"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,7 +47,7 @@ def cmd_apply(ids, state, data_root, evidence):
     sessions = json.loads(sessions_file.read_text())["sessions"]
     inv_f = Path(evidence) / "inventory.json"
     inv = json.loads(inv_f.read_text()) if inv_f.exists() else None
-    extra_roots = so_schema.derive_extra_roots(inv)
+    extra_roots = so_schema.derive_extra_roots(inv, data_root)
     # staggered-apply warning: changes sharing a metric are unattributable to verify
     shared = {}
     for rid in ids:

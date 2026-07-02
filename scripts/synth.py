@@ -172,7 +172,7 @@ def main(argv=None):
     led = ledger_mod.load(lpath)
     recs = [r for f in a.analyst for r in load_analyst_output(f)]
     findings, dropped = synthesize(recs, ev, led, data_root,
-                                   so_schema.derive_extra_roots(ev["inventory"]))
+                                   so_schema.derive_extra_roots(ev["inventory"], data_root))
     for rec in findings:
         ledger_mod.append(lpath, {"id": rec["id"], "status": "proposed", "rec": rec,
                                   "evidence_hash": rec["evidence_hash"]})

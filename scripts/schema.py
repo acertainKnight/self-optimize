@@ -33,15 +33,24 @@ def evidence_hash(rec: dict) -> str:
     return hashlib.sha256(basis.encode()).hexdigest()[:12]
 
 
-def derive_extra_roots(inventory: dict):
+def derive_extra_roots(inventory: dict, data_root=None):
     """Extra sanctioned write roots from evidence inventory. Fail closed:
-    only a non-empty, absolute (after ~ expansion) string qualifies."""
+    only a non-empty, absolute (after ~ expansion) string qualifies, and it
+    must not overlap the data-root's own sanctioned subdirs (a memory dir
+    inside skills/agents/workflows would defeat the create-only rule there)."""
     settings = (inventory or {}).get("settings")
     amd = settings.get("autoMemoryDirectory") if isinstance(settings, dict) else None
     if not isinstance(amd, str) or not amd.strip():
         return None
-    expanded = str(Path(amd).expanduser())
-    return [expanded] if os.path.isabs(expanded) else None
+    expanded = os.path.normpath(str(Path(amd).expanduser()))
+    if not os.path.isabs(expanded):
+        return None
+    if data_root is not None:
+        for sub in ("skills", "agents", "workflows"):
+            base = os.path.normpath(str(Path(data_root) / sub))
+            if expanded == base or expanded.startswith(base + os.sep):
+                return None
+    return [expanded]
 
 
 def validate_rec(rec: dict) -> list[str]:
