@@ -93,6 +93,15 @@ class TestPack(unittest.TestCase):
         c = collect.constraints_pack(pathlib.Path(self.tmp) / "nope" / "ledger.jsonl")
         self.assertEqual(c["rejected"], [])
 
+    def test_constraints_pack_scrubs_secrets(self):
+        lpath = pathlib.Path(self.tmp) / "state2" / "ledger.jsonl"
+        lpath.parent.mkdir(parents=True)
+        lpath.write_text(json.dumps({"id": "r1", "status": "rejected",
+                                     "reason": "keep sk-ant-api03-FAKESECRETFAKESECRET out"}) + "\n")
+        reason = collect.constraints_pack(lpath)["rejected"][0]["reason"]
+        self.assertIn("[REDACTED:", reason)
+        self.assertNotIn("sk-ant-api03-FAKESECRETFAKESECRET", reason)
+
 
 if __name__ == "__main__":
     unittest.main()

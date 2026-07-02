@@ -277,8 +277,9 @@ def constraints_pack(lpath: Path, limit: int = 20) -> dict:
             if e.get("status") == "rejected":
                 rejected.append(e)
     rejected = rejected[-limit:]
-    return _stamp({"rejected": [{"title": id_title.get(e["id"], ""),
-                                 "reason": e.get("reason", ""), "ts": e.get("ts", "")}
+    return _stamp({"rejected": [{"title": redact.scrub(str(id_title.get(e["id"], "")))[0],
+                                 "reason": redact.scrub(str(e.get("reason", "")))[0],
+                                 "ts": e.get("ts", "")}
                                 for e in rejected]})
 
 
