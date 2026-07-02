@@ -29,7 +29,10 @@ def compute_metric(metric: dict, sessions: list, inventory: dict | None = None,
     if key == "permission_stalls":
         return _mean([s.get("permission_stalls", 0) for s in rows]), n
     if key == "model_output_tokens":
-        prefix = (metric.get("scope") or "model:").split(":", 1)[1]
+        scope = metric.get("scope") or ""
+        if ":" not in scope:
+            return None, 0
+        prefix = scope.split(":", 1)[1]
         vals = []
         for s in rows:
             vals.append(sum(v.get("output", 0) for m, v in (s.get("models") or {}).items()

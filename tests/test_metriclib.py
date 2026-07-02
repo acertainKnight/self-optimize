@@ -30,6 +30,13 @@ class TestMetrics(unittest.TestCase):
         v, n = metriclib.compute_metric({"key": "none"}, S, INV)
         self.assertEqual((v, n), (None, 0))
 
+    def test_model_output_tokens_malformed_scope_is_inconclusive(self):
+        v, n = metriclib.compute_metric(
+            {"key": "model_output_tokens", "scope": "global"}, S, None)
+        self.assertEqual((v, n), (None, 0))
+        v, n = metriclib.compute_metric({"key": "model_output_tokens"}, S, None)
+        self.assertEqual((v, n), (None, 0))
+
 
 if __name__ == "__main__":
     unittest.main()
