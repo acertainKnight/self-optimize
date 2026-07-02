@@ -84,7 +84,8 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
         msg = rec.get("message") or {}
         side = bool(rec.get("isSidechain"))
         if rec.get("uuid"):
-            texts_by_uuid[rec["uuid"]] = (rtype, _text(msg)[:800], rec.get("parentUuid"))
+            texts_by_uuid[rec["uuid"]] = (rtype, _text(msg)[:800], rec.get("parentUuid"),
+                                          msg.get("model") if rtype == "assistant" else None)
 
         if rtype == "assistant":
             u = msg.get("usage") or {}
@@ -126,14 +127,14 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
                 continue
             text = _text(msg)
             if text and correction_re.search(text[:200]):
-                prior = ""
+                prior, prior_model = "", None
                 parent = rec.get("parentUuid")
                 for _ in range(5):  # walk up to the nearest assistant text
                     if parent not in texts_by_uuid:
                         break
-                    role, ptext, gp = texts_by_uuid[parent]
+                    role, ptext, gp, pmodel = texts_by_uuid[parent]
                     if role == "assistant" and ptext:
-                        prior = ptext
+                        prior, prior_model = ptext, pmodel
                         break
                     parent = gp
                 ut, r1 = redact.scrub(text[:1200])
@@ -144,6 +145,7 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
                     "pattern": correction_re.search(text[:200]).group(0).strip(),
                     "user_text": ut,
                     "prior_assistant_text": pa,
+                    "model": prior_model,
                 })
 
     s["duplicate_reads"] = sum(c - 1 for c in read_paths.values() if c > 1)
@@ -163,7 +165,7 @@ import schema as so_schema
 
 def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, caps) -> dict:
     counters = {"skipped_lines": 0, "files": 0}
-    sessions, act, samples, dup_paths = [], {}, [], {}
+    sessions, act, samples, dup_paths, corr_by_model = [], {}, [], {}, {}
     proj_root = Path(data_root) / "projects"
     for f in sorted(proj_root.glob("*/*.jsonl")) if proj_root.exists() else []:
         project = f.parent.name
@@ -189,6 +191,8 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
                             "kind": "correction", "pattern": c["pattern"],
                             "user_text": c["user_text"],
                             "prior_assistant_text": c["prior_assistant_text"]})
+            if c.get("model"):
+                corr_by_model[c["model"]] = corr_by_model.get(c["model"], 0) + 1
         s["corrections_count"] = len(corrs)
         sessions.append(s)
 
@@ -197,7 +201,8 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
     per_project, per_model = {}, {}
     tot = {"sessions": n, "turns": 0, "input_tokens": 0, "output_tokens": 0,
            "cache_read": 0, "cache_write": 0}
-    waste = {"duplicate_reads_total": 0, "repeated_calls_total": 0, "permission_stalls_total": 0}
+    waste = {"duplicate_reads_total": 0, "repeated_calls_total": 0, "permission_stalls_total": 0,
+             "main_model_heavy_sessions": 0}
     corr_total = 0
     for s in sessions:
         for k in ("turns", "input_tokens", "output_tokens", "cache_read", "cache_write"):
@@ -206,15 +211,20 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
         p["sessions"] += 1
         p["output_tokens"] += s["output_tokens"]
         for m, v in s["models"].items():
-            e = per_model.setdefault(m, {"input": 0, "output": 0})
+            e = per_model.setdefault(m, {"input": 0, "output": 0, "sessions": 0})
             e["input"] += v["input"]
             e["output"] += v["output"]
+            e["sessions"] += 1
+        max_model_output = max((v["output"] for v in s["models"].values()), default=0)
+        if max_model_output > 50000 and (s["duplicate_reads"] + s["repeated_calls"]) >= 5:
+            waste["main_model_heavy_sessions"] += 1
         waste["duplicate_reads_total"] += s["duplicate_reads"]
         waste["repeated_calls_total"] += s["repeated_calls"]
         waste["permission_stalls_total"] += s["permission_stalls"]
         corr_total += s["corrections_count"]
     usage = {"window": {"since": since_iso, "until": max((s["ended_at"] or "" for s in sessions), default=None)},
              "totals": tot, "per_project": per_project, "per_model": per_model,
+             "corrections_by_model": corr_by_model,
              "waste": {**waste, "top_duplicate_read_paths":
                        sorted(dup_paths.items(), key=lambda kv: -kv[1])[:10]},
              "corrections": {"total": corr_total,

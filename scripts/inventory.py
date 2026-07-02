@@ -7,7 +7,7 @@ from pathlib import Path
 
 import schema as so_schema
 
-SETTINGS_ALLOWLIST = ["model", "outputStyle", "effortLevel"]
+SETTINGS_ALLOWLIST = ["model", "outputStyle", "effortLevel", "autoMemoryDirectory"]
 
 
 def _est(text: str) -> int:
@@ -56,6 +56,50 @@ def _dedupe(items: list) -> list:
         if prev is None or (prev["source"] != "user" and it["source"] == "user"):
             by_id[it["id"]] = it
     return list(by_id.values())
+
+
+def _available_plugins(data_root: Path, installed: dict) -> list:
+    """Guarded parse: the catalog cache is Claude Code's own cache file, not ours —
+    any shape drift must degrade to an empty list, never crash the collector."""
+    cache_f = data_root / "plugins" / "plugin-catalog-cache.json"
+    if not cache_f.exists():
+        return []
+    try:
+        catalog = json.loads(cache_f.read_text(errors="replace"))["catalog"]["plugins"]
+    except (json.JSONDecodeError, OSError, KeyError, TypeError):
+        return []
+    if not isinstance(catalog, dict):
+        return []
+    out = []
+    for pid, entry in catalog.items():
+        if pid in installed or not isinstance(entry, dict):
+            continue
+        name, _, marketplace = pid.rpartition("@")
+        me = entry.get("marketplace_entry") or {}
+        out.append({"id": f"availplugin:{pid}", "name": name or pid,
+                    "marketplace": marketplace, "description": (me.get("description") or "")[:200]})
+    return out
+
+
+def build_artifacts(inv: dict, evidence_dir) -> dict:
+    act = {}
+    if evidence_dir and (Path(evidence_dir) / "activation.json").exists():
+        act = json.loads((Path(evidence_dir) / "activation.json").read_text())["items"]
+    pool = [("skill", s) for s in inv["skills"] if s["source"] == "user"]
+    pool += [("agent", a) for a in inv["agents"]]
+    scored = sorted(((act.get(item["id"], {}).get("count", 0), kind, item) for kind, item in pool),
+                    key=lambda t: -t[0])
+    artifacts = []
+    for count, kind, item in scored[:10]:
+        try:
+            body = Path(item["path"]).read_text(errors="replace")[:8000]
+        except OSError:
+            continue
+        artifacts.append({"id": f"artifact:{kind}:{item['name']}", "kind": kind,
+                          "source": item["source"], "path": item["path"],
+                          "activation_count": count, "body": body})
+    return {"schema_version": so_schema.EVIDENCE_VERSION, "harness": so_schema.HARNESS,
+            "artifacts": artifacts}
 
 
 def _scan_hooks(settings: dict, enabled: dict, installed: dict) -> list:
@@ -112,6 +156,7 @@ def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
     plugins, skills, agents, mcp = [], [], [], []
     ipath = data_root / "plugins" / "installed_plugins.json"
     installed = json.loads(ipath.read_text())["plugins"] if ipath.exists() else {}
+    available_plugins = _available_plugins(data_root, installed)
     for pid, entries in installed.items():
         entry = entries[0] if isinstance(entries, list) and entries else {}
         install_path = entry.get("installPath") or ""
@@ -183,7 +228,7 @@ def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
     hooks = _scan_hooks(settings, enabled, installed)
     return {"schema_version": so_schema.EVIDENCE_VERSION, "harness": so_schema.HARNESS,
             "plugins": plugins, "skills": skills, "agents": agents, "mcp_servers": mcp,
-            "claude_md": claude_md, "hooks": hooks,
+            "claude_md": claude_md, "hooks": hooks, "available_plugins": available_plugins,
             "settings": {**{k: settings.get(k) for k in SETTINGS_ALLOWLIST},
                          "permissions_default_mode": perms.get("defaultMode")},
             "base_context_est": base, "unused": unused, "rare": rare}
@@ -214,10 +259,15 @@ def main(argv=None):
     out_file = Path(a.out) / "inventory.json"
     out_file.write_text(json.dumps(inv, indent=1))
     out_file.chmod(0o600)
+    art = build_artifacts(inv, a.out)
+    art_file = Path(a.out) / "artifacts.json"
+    art_file.write_text(json.dumps(art, indent=1))
+    art_file.chmod(0o600)
     update_last_metrics(state, base_context_est=inv["base_context_est"],
                         unused_surface_count=len(inv["unused"]))
     print(f"skills={len(inv['skills'])} agents={len(inv['agents'])} mcp={len(inv['mcp_servers'])} "
-          f"unused={len(inv['unused'])} base_context_est={inv['base_context_est']}")
+          f"unused={len(inv['unused'])} base_context_est={inv['base_context_est']} "
+          f"artifacts={len(art['artifacts'])}")
 
 
 if __name__ == "__main__":

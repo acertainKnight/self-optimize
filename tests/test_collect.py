@@ -29,6 +29,9 @@ class TestParseSession(unittest.TestCase):
         self.assertNotIn("SECRETSECRET", c["user_text"])
         self.assertIn("Reading the file first.", c["prior_assistant_text"])  # via parentUuid chain
 
+    def test_correction_records_prior_assistant_model(self):
+        self.assertEqual(self.s["corrections"][0]["model"], "claude-fable-5")
+
     def test_waste_and_activation(self):
         self.assertEqual(self.s["duplicate_reads"], 1)            # parser.py read twice
         self.assertEqual(self.s["permission_stalls"], 1)          # u5

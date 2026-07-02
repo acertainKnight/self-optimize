@@ -35,6 +35,36 @@ class TestPack(unittest.TestCase):
         pack3 = collect.collect_corpus(self.root, "2027-01-01T00:00:00Z", ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
         self.assertEqual(pack3["usage"]["totals"]["sessions"], 0)
 
+    def test_corrections_by_model_and_per_model_sessions(self):
+        pack = collect.collect_corpus(self.root, None, ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
+        self.assertEqual(pack["usage"]["corrections_by_model"], {"claude-fable-5": 2})
+        self.assertEqual(pack["usage"]["per_model"]["claude-fable-5"]["sessions"], 2)
+        self.assertEqual(pack["usage"]["per_model"]["claude-haiku-4-5"]["sessions"], 2)
+        self.assertEqual(pack["usage"]["waste"]["main_model_heavy_sessions"], 0)
+
+    def test_main_model_heavy_sessions_detected(self):
+        root = pathlib.Path(self.tmp) / "heavy"
+        (root / "projects" / "-heavy").mkdir(parents=True)
+        lines = [
+            json.dumps({"type": "user", "uuid": "u1", "timestamp": "2026-06-20T10:00:00Z",
+                        "message": {"role": "user", "content": "please add a feature"}}),
+            json.dumps({"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+                        "timestamp": "2026-06-20T10:00:05Z",
+                        "message": {"role": "assistant", "model": "claude-opus-4-7",
+                                    "usage": {"input_tokens": 10, "output_tokens": 60000},
+                                    "content": [{"type": "text", "text": "Reading file."}] +
+                                              [{"type": "tool_use", "id": f"t{i}", "name": "Read",
+                                                "input": {"file_path": "same.py"}} for i in range(6)]}}),
+            json.dumps({"type": "user", "uuid": "u2", "parentUuid": "a1",
+                        "timestamp": "2026-06-20T10:00:10Z",
+                        "message": {"role": "user", "content": "no, wrong approach"}}),
+        ]
+        (root / "projects" / "-heavy" / "s.jsonl").write_text("\n".join(lines) + "\n")
+        pack = collect.collect_corpus(root, None, ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
+        self.assertEqual(pack["usage"]["waste"]["main_model_heavy_sessions"], 1)
+        self.assertEqual(pack["usage"]["corrections_by_model"], {"claude-opus-4-7": 1})
+        self.assertEqual(pack["usage"]["per_model"]["claude-opus-4-7"]["sessions"], 1)
+
     def test_same_filename_across_projects_counts_are_isolated(self):
         root = pathlib.Path(self.tmp) / "data2"
         (root / "projects" / "-a").mkdir(parents=True)

@@ -93,6 +93,78 @@ class TestInventory(unittest.TestCase):
             inv = inventory.build_inventory(root, None)
             self.assertEqual(inv["plugins"], [])
 
+    def test_settings_allowlist_includes_auto_memory_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            make_fake_claude(root)
+            s = json.loads((root / "settings.json").read_text())
+            s["autoMemoryDirectory"] = "/Users/nick/.claude/memory"
+            (root / "settings.json").write_text(json.dumps(s))
+            inv = inventory.build_inventory(root, None)
+            self.assertEqual(inv["settings"]["autoMemoryDirectory"], "/Users/nick/.claude/memory")
+
+    def test_available_plugins_excludes_installed_and_parses_catalog(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            make_fake_claude(root)
+            (root / "plugins" / "plugin-catalog-cache.json").write_text(json.dumps({
+                "catalog": {"plugins": {
+                    "toolkit@mp": {"marketplace_entry": {"description": "installed already"}},
+                    "shiny@mp2": {"marketplace_entry": {"name": "shiny", "description": "does shiny things"}},
+                }}}))
+            inv = inventory.build_inventory(root, None)
+            ids = {p["id"] for p in inv["available_plugins"]}
+            self.assertIn("availplugin:shiny@mp2", ids)
+            self.assertNotIn("availplugin:toolkit@mp", ids)   # already installed
+            shiny = next(p for p in inv["available_plugins"] if p["id"] == "availplugin:shiny@mp2")
+            self.assertEqual(shiny["marketplace"], "mp2")
+            self.assertEqual(shiny["description"], "does shiny things")
+
+    def test_available_plugins_guarded_parse_on_malformed_cache(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            make_fake_claude(root)
+            (root / "plugins" / "plugin-catalog-cache.json").write_text("{not json")
+            inv = inventory.build_inventory(root, None)
+            self.assertEqual(inv["available_plugins"], [])
+
+    def test_build_artifacts_top_activated_user_skills_and_any_source_agents(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            ev = pathlib.Path(d) / "ev"
+            ev.mkdir()
+            make_fake_claude(root)
+            (ev / "activation.json").write_text(json.dumps(
+                {"schema_version": "1", "harness": "claude-code",
+                 "items": {"skill:my-skill": {"count": 9, "last_used": "2026-06-30", "projects": ["p"]},
+                           "skill:used-skill": {"count": 2, "last_used": "2026-06-30", "projects": ["p"]},
+                           "agent:helper": {"count": 4, "last_used": "2026-06-30", "projects": ["p"]}}}))
+            inv = inventory.build_inventory(root, ev)
+            art = inventory.build_artifacts(inv, ev)
+            ids = [a["id"] for a in art["artifacts"]]
+            self.assertEqual(len(art["artifacts"]), 2)
+            self.assertEqual(ids[0], "artifact:skill:my-skill")     # highest activation first
+            self.assertIn("artifact:agent:helper", ids)
+            self.assertNotIn("artifact:skill:used-skill", ids)      # plugin-owned skill excluded
+            my = next(a for a in art["artifacts"] if a["id"] == "artifact:skill:my-skill")
+            self.assertEqual(my["source"], "user")
+            self.assertLessEqual(len(my["body"]), 8000)
+
+    def test_main_writes_artifacts_with_600_perms(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            ev = pathlib.Path(d) / "ev"
+            ev.mkdir()
+            make_fake_claude(root)
+            (ev / "activation.json").write_text(json.dumps(
+                {"schema_version": "1", "harness": "claude-code", "items": {}}))
+            inventory.main(["--data-root", str(root), "--state", str(pathlib.Path(d) / "st"),
+                            "--out", str(ev)])
+            mode = (ev / "artifacts.json").stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600)
+            art = json.loads((ev / "artifacts.json").read_text())
+            self.assertEqual(art["schema_version"], "1")
+
     def test_hooks_inventory_from_settings_and_plugin_manifest(self):
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d) / "claude"
