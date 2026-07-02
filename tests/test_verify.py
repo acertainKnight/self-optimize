@@ -35,6 +35,32 @@ class TestVerify(unittest.TestCase):
         e2 = entry(2.0); e2["rec"]["metric"] = {"key": "none"}
         self.assertEqual(verify.verify_entries({"a": e2}, sessions([0, 0, 0]), None, CFG), [])
 
+    def test_significant_distributions_verify(self):
+        e = entry(10.0)
+        e["baseline"]["samples"] = [10.0, 10.0, 10.0, 10.0]
+        rows = verify.verify_entries({"a": e}, sessions([0, 0, 0, 0]), None,
+                                     {"verify": {"min_sessions": 3, "min_rel_change": 0.10}})
+        self.assertEqual(rows[0]["verdict"], "verified")
+        self.assertEqual(rows[0]["p_value"], 0.0)
+
+    def test_noisy_distributions_flip_verdict_to_inconclusive(self):
+        legacy = entry(5.0)   # no "samples" key: legacy threshold-only path
+        rows = verify.verify_entries({"a": legacy}, sessions([1, 5, 0, 6, 2, 4]), None,
+                                     {"verify": {"min_sessions": 3, "min_rel_change": 0.10}})
+        self.assertEqual(rows[0]["verdict"], "verified")   # legacy rule alone says verified
+        self.assertIsNone(rows[0]["p_value"])
+        noisy = entry(5.0)
+        noisy["baseline"]["samples"] = [3.0, 7.0, 2.0, 8.0, 4.0, 6.0]   # high-variance baseline
+        rows = verify.verify_entries({"a": noisy}, sessions([1, 5, 0, 6, 2, 4]), None,
+                                     {"verify": {"min_sessions": 3, "min_rel_change": 0.10}})
+        self.assertEqual(rows[0]["verdict"], "inconclusive")   # same movement, but p >= 0.05
+        self.assertGreater(rows[0]["p_value"], 0.05)
+
+    def test_legacy_baseline_without_samples_uses_threshold_only(self):
+        rows = verify.verify_entries({"a": entry(2.0)}, sessions([0, 0, 0]), None, CFG)
+        self.assertEqual(rows[0]["verdict"], "verified")
+        self.assertIsNone(rows[0]["p_value"])
+
     def test_rollback_still_works_after_verdict(self):
         import json, tempfile
         from datetime import datetime, timedelta, timezone

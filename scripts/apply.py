@@ -113,9 +113,10 @@ def cmd_apply(ids, state, data_root, evidence):
             print(f"{rid}: APPLY FAILED (io) — {err}")
             continue
         val, n = metriclib.compute_metric(rec["metric"], sessions, inv)
+        samples = metriclib.metric_samples(rec["metric"], sessions, inv)[-50:]
         ledger_mod.append(lpath, {"id": rid, "status": "applied", "rec": rec,
                                   "applied_at": _now(), "snapshot": str(snap), "files": meta,
-                                  "baseline": {"value": val, "n_sessions": n},
+                                  "baseline": {"value": val, "n_sessions": n, "samples": samples},
                                   "evidence_hash": e.get("evidence_hash")})
         print(f"{rid}: applied — baseline {rec['metric']['key']}={val} (n={n}). "
               f"Rollback: /self-optimize rollback {rid}")

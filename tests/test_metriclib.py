@@ -37,6 +37,23 @@ class TestMetrics(unittest.TestCase):
         v, n = metriclib.compute_metric({"key": "model_output_tokens"}, S, None)
         self.assertEqual((v, n), (None, 0))
 
+    def test_metric_samples_session_means(self):
+        vals = metriclib.metric_samples({"key": "correction_rate", "scope": "global"}, S, None)
+        self.assertEqual(vals, [2.0, 0.0])
+        vals = metriclib.metric_samples({"key": "correction_rate", "scope": "global"}, S, None,
+                                        after_ts="2026-06-10T00:00:00Z")
+        self.assertEqual(vals, [0.0])
+        vals = metriclib.metric_samples(
+            {"key": "model_output_tokens", "scope": "model:claude-opus"}, S, None)
+        self.assertEqual(vals, [80.0, 0.0])
+
+    def test_metric_samples_inventory_and_none_are_empty(self):
+        self.assertEqual(metriclib.metric_samples({"key": "unused_surface_count"}, S, INV), [])
+        self.assertEqual(metriclib.metric_samples({"key": "base_context_est"}, S, INV), [])
+        self.assertEqual(metriclib.metric_samples({"key": "none"}, S, INV), [])
+        self.assertEqual(
+            metriclib.metric_samples({"key": "model_output_tokens", "scope": "global"}, S, None), [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -39,7 +39,7 @@ class TestApply(unittest.TestCase):
         self.assertEqual(obj["skillOverrides"]["dusty"], "off")
         e = ledger.load(self.lpath)["r1"]
         self.assertEqual(e["status"], "applied")
-        self.assertEqual(e["baseline"], {"value": 2.0, "n_sessions": 1})
+        self.assertEqual(e["baseline"], {"value": 2.0, "n_sessions": 1, "samples": [2.0]})
         self.assertTrue(pathlib.Path(e["snapshot"]).exists())
         self.assertTrue(ledger.load(self.lpath)["r1"]["applied_at"].endswith("Z"))
         apply_mod.cmd_rollback("r1", self.state)
@@ -83,6 +83,15 @@ class TestApply(unittest.TestCase):
         e = ledger.load(self.lpath)["r1"]
         self.assertEqual(e["status"], "apply_failed")
         self.assertTrue(any("io:" in x for x in e.get("errors", [])))
+
+    def test_baseline_samples_capped_at_fifty(self):
+        many = {"sessions": [{"started_at": f"2026-05-{(i % 28) + 1:02d}", "corrections_count": i,
+                              "input_tokens": 1, "output_tokens": 1} for i in range(60)]}
+        (self.ev / "sessions.json").write_text(json.dumps(many))
+        apply_mod.cmd_apply(["r1"], self.state, self.data, self.ev)
+        e = ledger.load(self.lpath)["r1"]
+        self.assertEqual(len(e["baseline"]["samples"]), 50)
+        self.assertEqual(e["baseline"]["samples"], [float(x) for x in range(10, 60)])
 
     def test_file_replace_apply_and_rollback_roundtrip(self):
         agent_dir = self.data / "agents"
