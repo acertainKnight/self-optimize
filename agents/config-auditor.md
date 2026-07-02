@@ -58,7 +58,7 @@ Priorities:
 Required fields per recommendation (identical to the shared schema):
 title, category ("bloat" | "model-routing" | "new-plugin" | "claude-md" | "settings" | "permissions" | "hooks"),
 evidence_refs (["inventory:<item_id>" | "activation:<item_id>" | "usage:<dotted.path>" | "rule:<rule_id>" | "availplugin:<name@mp>"]),
-impact {"ordinal": ...}, risk, metric {key, direction, scope},
+impact {"ordinal": "high" | "med" | "low"} (a judgment, never a rank number), risk, metric {key, direction, scope},
 action {harness: "claude-code", tier, type, payload}.
 For bloat recs use metric {"key": "base_context_est", "direction": "down", "scope": "global"}.
 
