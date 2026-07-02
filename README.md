@@ -51,6 +51,20 @@ keeps its own state, evidence, ledger, and reports in `<config-dir>/self-optimiz
 caps (≤ ~60k tokens of analyst input by default) plus two sonnet-class analyst
 outputs; the report footer records actual analyst tokens per run.
 
+## Running it on a schedule
+
+Not enabled by default — wire up whichever fits your setup:
+
+- Claude Code's built-in scheduler: `/schedule weekly /self-optimize` runs a full
+  loop once a week as a routine.
+- A plain crontab line (adjust the time and `CLAUDE_CONFIG_DIR` for the instance
+  you want optimized):
+
+      0 9 * * MON  CLAUDE_CONFIG_DIR=$HOME/.claude claude -p "/self-optimize" >> $HOME/.claude/self-optimize/cron.log 2>&1
+
+Either way it's the same full run described above — collect, verify, two analysts,
+report — so review the report and `apply`/`reject` by hand; nothing auto-applies.
+
 ## What it reads and writes
 
 Reads: `<config-dir>/projects/**/*.jsonl` (locally, through a secret scrubber),
