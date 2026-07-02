@@ -17,7 +17,8 @@ ORD = {"high": 3, "med": 2, "low": 1}
 def load_analyst_output(path) -> list:
     text = Path(path).read_text().strip()
     if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+        parts = text.split("\n", 1)
+        text = parts[1].rsplit("```", 1)[0] if len(parts) > 1 else ""
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
@@ -36,6 +37,8 @@ def _resolve_path(d: dict, dotted: str) -> bool:
 
 
 def check_citation(ref: str, ev: dict) -> bool:
+    if not isinstance(ref, str):
+        return False
     kind, _, rest = ref.partition(":")
     if kind == "usage":
         return _resolve_path(ev["usage"], rest)

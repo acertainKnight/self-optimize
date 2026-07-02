@@ -74,6 +74,14 @@ class TestSynth(unittest.TestCase):
             f.write("```json\n" + json.dumps([bloat_rec()]) + "\n```")
         self.assertEqual(len(synth.load_analyst_output(f.name)), 1)
 
+    def test_adversarial_junk_degrades_not_crashes(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            f.write('```json[{"title": "x"}]```')  # single-line fence, no newline
+        self.assertEqual(synth.load_analyst_output(f.name), [])
+        self.assertFalse(synth.check_citation(None, EV))
+        self.assertFalse(synth.check_citation(42, EV))
+
 
 if __name__ == "__main__":
     unittest.main()
