@@ -29,6 +29,12 @@ class TestSchema(unittest.TestCase):
         r3 = good_rec(); r3["action"]["tier"] = "B"  # setting_change must be tier A
         self.assertTrue(any("tier" in e for e in schema.validate_rec(r3)))
 
+    def test_non_dict_action_or_metric_returns_errors_not_crash(self):
+        r = good_rec(); r["action"] = "oops"
+        self.assertIn("action must be an object", schema.validate_rec(r))
+        r2 = good_rec(); r2["metric"] = None
+        self.assertIn("metric must be an object", schema.validate_rec(r2))
+
     def test_rec_id_stable_and_payload_sensitive(self):
         a, b = good_rec(), good_rec()
         self.assertEqual(schema.rec_id(a), schema.rec_id(b))

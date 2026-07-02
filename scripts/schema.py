@@ -35,6 +35,13 @@ def validate_rec(rec: dict) -> list[str]:
     if errs:
         return errs
     a = rec["action"]
+    m = rec["metric"]
+    if not isinstance(a, dict):
+        errs.append("action must be an object")
+    if not isinstance(m, dict):
+        errs.append("metric must be an object")
+    if errs:
+        return errs
     t = a.get("type")
     if t not in ACTION_TYPES_A | ACTION_TYPES_B:
         errs.append(f"bad action type: {t}")
@@ -44,7 +51,6 @@ def validate_rec(rec: dict) -> list[str]:
             errs.append(f"tier must be {want} for {t}")
     if rec["category"] not in CATEGORIES:
         errs.append(f"bad category: {rec['category']}")
-    m = rec["metric"]
     if m.get("key") not in METRIC_KEYS:
         errs.append(f"bad metric key: {m.get('key')}")
     if m.get("key") != "none" and m.get("direction") not in DIRECTIONS:
