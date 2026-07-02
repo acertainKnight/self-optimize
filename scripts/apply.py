@@ -215,6 +215,18 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
         print(f"{dfile}: no findings.json in the evidence run {ev_run!r} — cannot "
               f"authorize any decision; run a full /self-optimize first")
         return {}
+    # amend AUTHORS a new action (unlike apply/reject/assist, which only select recs
+    # the local pipeline already proposed and guarded). A file auto-picked as newest
+    # in browser-writable ~/Downloads (path_or_none is None) is exactly the drive-by
+    # surface a planted amend would ride in on — so amend-bearing files must be named
+    # explicitly. apply/reject-only auto-picks still work as before.
+    # `not path_or_none`, not `is None`: _find_decisions_file auto-picks for ANY
+    # falsy path (empty string included), so the guard must fire on the same
+    # condition or `decide ""` would auto-pick a Downloads file and skip this gate
+    if not path_or_none and isinstance(data.get("amend"), list) and data["amend"]:
+        print(f"{dfile}: amend-bearing decisions files must be passed explicitly: "
+              "/self-optimize decide <path>")
+        return {}
     run_ids = {f["id"] for f in json.loads(fpath.read_text()).get("findings", [])
                if isinstance(f, dict) and isinstance(f.get("id"), str)}
     apply_ids = [i for i in (data.get("apply") or []) if isinstance(i, str)]
@@ -247,7 +259,10 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
         else:
             why = ([] if reason_ok else ["amend requires a non-empty reason"]) + (
                 [] if action_ok else ["amend action must be an object"])
-            amend_malformed.append({"id": a["id"], "reason": "; ".join(why)})
+            # carry the attempted action so a refused/malformed amend is forensically
+            # replayable from the decision log, not just {id, reason}
+            amend_malformed.append({"id": a["id"], "action": a.get("action"),
+                                    "reason": "; ".join(why)})
     # dedupe by id: the loop below reloads the ledger fresh each iteration (so a
     # repeated id would just be re-evaluated against its own prior outcome rather
     # than corrupting anything), but a spurious duplicate "not amendable" refusal
@@ -287,7 +302,7 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
             # amend that now-applied id as if it were still merely proposed
             e = ledger_mod.load(lpath).get(aid)
             if not e or e.get("status") not in ("proposed", "approved"):
-                amend_refused.append({"id": aid, "reason":
+                amend_refused.append({"id": aid, "action": action, "reason":
                                       f"not amendable (status={e['status'] if e else 'unknown'})"})
                 continue
             replacement = dict(e["rec"])
@@ -313,28 +328,28 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
                     errs = [f"malformed action payload: {gerr}"]
             if errs:
                 # leave the original untouched: refused amends must be retryable
-                amend_refused.append({"id": aid, "reason": "; ".join(errs)})
+                amend_refused.append({"id": aid, "action": action, "reason": "; ".join(errs)})
                 continue
             new_id = so_schema.rec_id(replacement)
             # rec_id hashes only category|action.type|payload, so a replacement can
             # collide with an existing ledger id: the original itself (a no-op
-            # amend — refuse outright), or an unrelated id from any prior run. The
-            # ledger is append-only/last-entry-wins, so blindly appending under a
-            # colliding id would clobber that id's real history (status, snapshot,
-            # baseline) — UNLESS the existing entry is only a dangling proposed/
-            # apply_failed remnant (nothing of value committed under it yet, e.g. a
-            # previous failed attempt at this exact amend), in which case retrying
-            # must be allowed or "fix and retry" would be a permanent dead end.
+            # amend), a LIVE still-undecided finding from this run (status
+            # 'proposed' — hijacking it to applied would suppress a real rec with no
+            # human decision), or any committed history. The ledger is append-only/
+            # last-entry-wins, so blindly appending under a colliding id would
+            # clobber that id's real row. The ONLY id safe to reuse is a dangling
+            # remnant of a PRIOR failed/rolled-back attempt at this exact amend —
+            # nothing of value lives under it, and refusing would make "fix and
+            # retry" a permanent dead end. Every other status must be refused.
             if new_id == aid:
-                amend_refused.append({"id": aid, "reason":
+                amend_refused.append({"id": aid, "action": action, "reason":
                                       "replacement action is identical to the original — nothing to amend"})
                 continue
             existing = ledger_mod.load(lpath).get(new_id)
-            if existing and existing.get("status") not in ("proposed", "apply_failed"):
-                amend_refused.append({"id": aid, "reason":
-                                      f"replacement action collides with existing ledger id {new_id} "
-                                      f"(status={existing['status']}) — refused to avoid corrupting "
-                                      "ledger state"})
+            if existing and existing.get("status") not in ("apply_failed", "rolled_back"):
+                amend_refused.append({"id": aid, "action": action, "reason":
+                                      f"replacement action collides with existing recommendation {new_id}; "
+                                      "choose a different action"})
                 continue
             replacement["id"] = new_id
             replacement["evidence_hash"] = e.get("evidence_hash")
@@ -347,11 +362,22 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
             ledger_mod.append(lpath, {"id": new_id, "status": "proposed", "rec": replacement,
                                       "evidence_hash": replacement["evidence_hash"]})
             cmd_apply([new_id], state, data_root, evidence)
-            if (ledger_mod.load(lpath).get(new_id) or {}).get("status") == "applied":
+            post = (ledger_mod.load(lpath).get(new_id) or {}).get("status")
+            if post == "applied":
                 cmd_reject(aid, f"amended: {reason}", state)
                 amended.append({"orig": aid, "new": new_id, "title": replacement["title"]})
             else:
-                amend_refused.append({"id": aid, "reason":
+                # cmd_apply can return early WITHOUT writing a terminal status (e.g.
+                # sessions.json missing), leaving new_id dangling at 'proposed'. The
+                # collision guard only treats apply_failed/rolled_back as retryable
+                # remnants, so demote a still-'proposed' dangler to apply_failed —
+                # otherwise the "fix and retry" this refusal promises would be
+                # permanently blocked for this exact action by its own leftover row.
+                if post == "proposed":
+                    ledger_mod.append(lpath, {"id": new_id, "status": "apply_failed",
+                                              "errors": ["replacement apply produced no status"],
+                                              "evidence_hash": replacement["evidence_hash"]})
+                amend_refused.append({"id": aid, "action": action, "reason":
                                       "replacement action failed to apply — original left untouched"})
     # outside the `if amend_items:` gate: amend_refused can be non-empty purely
     # from malformed entries even when amend_items itself is empty, and that must
