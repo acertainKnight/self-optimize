@@ -42,7 +42,9 @@ apply/reject one-liner instead), then run:
 with no argument it picks up the newest `self-optimize-decisions-*.json` in
 `~/Downloads` automatically; pass a path to use a specific file. It applies/rejects
 your tier-A picks and lists the tier-B items you selected for assisted work — those
-are never run automatically, you do them together with Claude afterward.
+are never run automatically, you do them together with Claude afterward. Each decide
+run also logs what happened to `<config-dir>/self-optimize/state/decisions/` (the
+`~/Downloads` file itself is transient).
 
 ## Instances
 

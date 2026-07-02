@@ -255,6 +255,36 @@ class TestDecide(unittest.TestCase):
             result = apply_mod.cmd_decide(None, self.state, self.data, self.ev)
         self.assertEqual(result, {})
 
+    def test_decide_persists_log_with_apply_and_reject(self):
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        dfile.write_text(json.dumps(self._decisions()))
+        result = apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        decisions_dir = self.state / "state" / "decisions"
+        files = list(decisions_dir.iterdir())
+        self.assertEqual(len(files), 1)
+        logged = json.loads(files[0].read_text())
+        self.assertEqual(logged["apply"], ["r1"])
+        self.assertEqual(logged["reject"], [{"id": "r2", "reason": "not now"}])
+        self.assertEqual(logged["assist"], [{"id": "r3", "title": "Trim CLAUDE.md",
+                                             "payload_type": "diff"}])
+        self.assertEqual(logged["source_file"], str(dfile))
+        self.assertEqual(logged["run_id"], "ev")
+        self.assertTrue(logged["decided_at"].endswith("Z"))
+        self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
+        self.assertEqual(result["log"], str(files[0]))
+
+    def test_decide_log_records_refused_out_of_run_id(self):
+        # r4 is proposed tier-A in the ledger but not in this run's findings.json
+        dfile = self.downloads / "self-optimize-decisions-ev.json"
+        dfile.write_text(json.dumps(self._decisions(apply=["r4"], reject=[], assist=[])))
+        apply_mod.cmd_decide(str(dfile), self.state, self.data, self.ev)
+        decisions_dir = self.state / "state" / "decisions"
+        files = list(decisions_dir.iterdir())
+        self.assertEqual(len(files), 1)
+        logged = json.loads(files[0].read_text())
+        self.assertEqual(logged["refused"], ["r4"])
+        self.assertEqual(logged["apply"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

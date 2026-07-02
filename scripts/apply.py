@@ -5,6 +5,7 @@ metric baseline captured at apply time so verification is possible at all."""
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -235,8 +236,33 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
         print("ASSISTED WORK SELECTED (tier B — complete these with the user):")
         for item in assist:
             print(f"- {item['id']}: {item['title']} [{item['payload_type']}]")
-    return {"applied": applied, "rejected": [r["id"] for r in reject_items],
-            "assist": assist, "refused": sorted(set(refused))}
+    result = {"applied": applied, "rejected": [r["id"] for r in reject_items],
+              "assist": assist, "refused": sorted(set(refused))}
+    # durable log: the decisions.json in ~/Downloads is transient, this survives.
+    # applies/rejects are already committed to the ledger above, so a write failure
+    # here must not raise — it would lose the result dict the caller acts on.
+    now = datetime.now(timezone.utc)
+    log_dir = Path(state) / "state" / "decisions"
+    # ponytail: second-granularity name, same collision class as cmd_apply's snapshot
+    # dirs above — two decides for one run within the same second overwrite each
+    # other. Add sub-second precision or O_EXCL+suffix if scripted re-decides show up.
+    log_path = log_dir / f"{run_id}-{now.strftime('%Y%m%dT%H%M%S')}.json"
+    log_body = json.dumps({
+        "run_id": run_id, "decided_at": now.isoformat().replace("+00:00", "Z"),
+        "source_file": str(dfile), "apply": result["applied"],
+        "reject": [{"id": r["id"], "reason": r["reason"]} for r in reject_items],
+        "refused": result["refused"], "assist": assist,
+    }, indent=2) + "\n"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(log_body)
+        print(f"decision log: {log_path}")
+        result["log"] = str(log_path)
+    except OSError as err:
+        print(f"decision log FAILED (not persisted) — {err}")
+    return result
 
 
 def main(argv=None):
