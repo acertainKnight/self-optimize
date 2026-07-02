@@ -7,7 +7,7 @@ import hashlib
 import json
 import shutil
 import sys
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "adapters" / "claude_code"))
@@ -25,11 +25,25 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _restore(meta, snap):
+    for m in meta:
+        p = Path(m["path"])
+        if m["pre_exists"]:
+            shutil.copy2(snap / m["snap_name"], p)
+        elif p.exists():
+            p.unlink()
+
+
 def cmd_apply(ids, state, data_root, evidence):
+    ids = list(dict.fromkeys(ids))  # dedupe: in-memory ledger is stale within one run
     state = Path(state)
     lpath = state / "state" / "ledger.jsonl"
     led = ledger_mod.load(lpath)
-    sessions = json.loads((Path(evidence) / "sessions.json").read_text())["sessions"]
+    sessions_file = Path(evidence) / "sessions.json"
+    if not sessions_file.exists():
+        print(f"evidence pack incomplete: {sessions_file} missing — run a collect first")
+        return
+    sessions = json.loads(sessions_file.read_text())["sessions"]
     inv_f = Path(evidence) / "inventory.json"
     inv = json.loads(inv_f.read_text()) if inv_f.exists() else None
     # staggered-apply warning: changes sharing a metric are unattributable to verify
@@ -50,7 +64,8 @@ def cmd_apply(ids, state, data_root, evidence):
             continue
         rec = e["rec"]
         if rec["action"]["tier"] != "A":
-            print(f"{rid}: tier B — apply manually (see the report)")
+            print(f"{rid}: tier {rec['action'].get('tier')} — not auto-applicable, "
+                  f"apply manually (see the report)")
             continue
         try:
             edits = templates.render(rec["action"], Path(data_root))
@@ -59,31 +74,42 @@ def cmd_apply(ids, state, data_root, evidence):
                                       "errors": [str(err)], "evidence_hash": e.get("evidence_hash")})
             print(f"{rid}: refused by policy — {err}")
             continue
-        snap = state / "state" / "snapshots" / date.today().isoformat() / rid
+        # UTC timestamp (not local date): same-day re-applies must not share a dir,
+        # or the second apply would overwrite the true pre-state snapshot
+        snap = (state / "state" / "snapshots"
+                / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") / rid)
         snap.mkdir(parents=True, exist_ok=True)
         meta = []
-        for path, _ in edits:
-            entry = {"path": str(path), "pre_exists": path.exists(), "pre_sha": _sha(path)}
+        for i, (path, _) in enumerate(edits):
+            snap_name = f"{i}-{path.name}"  # index prefix: basenames can repeat across dirs
+            entry = {"path": str(path), "pre_exists": path.exists(),
+                     "pre_sha": _sha(path), "snap_name": snap_name}
             if entry["pre_exists"]:
-                shutil.copy2(path, snap / path.name)
+                shutil.copy2(path, snap / snap_name)
             meta.append(entry)
-        for path, content in edits:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content)
-        errs = templates.smoke_check([p for p, _ in edits], Path(data_root))
-        if errs:
+        try:
+            for path, content in edits:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+            errs = templates.smoke_check([p for p, _ in edits], Path(data_root))
+            if errs:
+                _restore(meta, snap)
+                ledger_mod.append(lpath, {"id": rid, "status": "apply_failed", "errors": errs,
+                                          "evidence_hash": e.get("evidence_hash")})
+                print(f"{rid}: APPLY FAILED (restored) — {errs}")
+                continue
             for m in meta:
-                p = Path(m["path"])
-                if m["pre_exists"]:
-                    shutil.copy2(snap / p.name, p)
-                elif p.exists():
-                    p.unlink()
-            ledger_mod.append(lpath, {"id": rid, "status": "apply_failed", "errors": errs,
+                m["post_sha"] = _sha(Path(m["path"]))
+        except OSError as err:
+            try:
+                _restore(meta, snap)
+            except OSError as rerr:
+                print(f"{rid}: RESTORE FAILED ({rerr}) — recover manually from {snap}")
+            ledger_mod.append(lpath, {"id": rid, "status": "apply_failed",
+                                      "errors": [f"io: {err}"],
                                       "evidence_hash": e.get("evidence_hash")})
-            print(f"{rid}: APPLY FAILED (restored) — {errs}")
+            print(f"{rid}: APPLY FAILED (io) — {err}")
             continue
-        for m in meta:
-            m["post_sha"] = _sha(Path(m["path"]))
         val, n = metriclib.compute_metric(rec["metric"], sessions, inv)
         ledger_mod.append(lpath, {"id": rid, "status": "applied", "rec": rec,
                                   "applied_at": _now(), "snapshot": str(snap), "files": meta,
@@ -105,12 +131,12 @@ def cmd_rollback(rid, state, force=False):
         if _sha(Path(m["path"])) != m["post_sha"] and not force:
             print(f"{rid}: {m['path']} changed since apply — rerun with --force to override")
             return
-    for m in e["files"]:
-        p = Path(m["path"])
-        if m["pre_exists"]:
-            shutil.copy2(snap / p.name, p)
-        elif p.exists():
-            p.unlink()
+    try:
+        _restore(e["files"], snap)
+    except OSError as err:
+        # no ledger append: status stays "applied", which remains accurate
+        print(f"{rid}: ROLLBACK FAILED ({err}) — restore manually from {snap}")
+        return
     ledger_mod.append(lpath, {"id": rid, "status": "rolled_back",
                               "evidence_hash": e.get("evidence_hash")})
     print(f"{rid}: rolled back")

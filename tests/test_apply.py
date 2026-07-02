@@ -61,6 +61,28 @@ class TestApply(unittest.TestCase):
         e = ledger.load(self.lpath)["r1"]
         self.assertEqual((e["status"], e["reason"]), ("rejected", "keep it around"))
 
+    def test_duplicate_ids_apply_once(self):
+        apply_mod.cmd_apply(["r1", "r1"], self.state, self.data, self.ev)
+        snaps = list((self.state / "state" / "snapshots").rglob("r1"))
+        self.assertEqual(len(snaps), 1)
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "applied")
+
+    def test_missing_sessions_evidence_fails_cleanly(self):
+        import tempfile
+        empty = pathlib.Path(tempfile.mkdtemp())
+        apply_mod.cmd_apply(["r1"], self.state, self.data, empty)   # must not raise
+        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
+
+    def test_write_failure_restores_and_records(self):
+        from unittest import mock
+        original = (self.data / "settings.json").read_text()
+        with mock.patch.object(pathlib.Path, "write_text", side_effect=OSError("disk full")):
+            apply_mod.cmd_apply(["r1"], self.state, self.data, self.ev)
+        self.assertEqual((self.data / "settings.json").read_text(), original)
+        e = ledger.load(self.lpath)["r1"]
+        self.assertEqual(e["status"], "apply_failed")
+        self.assertTrue(any("io:" in x for x in e.get("errors", [])))
+
 
 if __name__ == "__main__":
     unittest.main()
