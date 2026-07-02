@@ -809,3 +809,25 @@ class TestDecide(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDiffRenderOSError(unittest.TestCase):
+    def test_directory_named_claude_md_fails_only_that_rec(self):
+        tmp = tempfile.TemporaryDirectory()
+        base = pathlib.Path(tmp.name)
+        state, data, ev = base / "st", base / "cl", base / "ev"
+        for d in (state, data, ev):
+            d.mkdir()
+        (data / "settings.json").write_text("{}")
+        (ev / "sessions.json").write_text(json.dumps({"sessions": [
+            {"started_at": "2026-06-01", "corrections_count": 1}]}))
+        (data / "CLAUDE.md").mkdir()  # a DIRECTORY where a file is expected
+        rec = setting_rec()
+        rec["action"] = {"harness": "claude-code", "tier": "B", "type": "diff",
+                         "payload": {"file": str(data / "CLAUDE.md"),
+                                     "diff": "@@ -0,0 +1,1 @@\n+x\n"}}
+        lp = state / "state" / "ledger.jsonl"
+        ledger.append(lp, {"id": "d1", "status": "proposed", "rec": rec, "evidence_hash": "e"})
+        apply_mod.cmd_apply(["d1"], state, data, ev)   # must not raise
+        self.assertEqual(ledger.load(lp)["d1"]["status"], "apply_failed")
+        tmp.cleanup()

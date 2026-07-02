@@ -73,7 +73,7 @@ def cmd_apply(ids, state, data_root, evidence):
             continue
         try:
             edits = templates.render(rec["action"], Path(data_root), extra_roots)
-        except (ValueError, KeyError, TypeError, AttributeError) as err:
+        except (ValueError, KeyError, TypeError, AttributeError, OSError) as err:
             # KeyError/TypeError/AttributeError alongside ValueError: templates.render
             # indexes payload fields directly (p["value"], p["path"], dict lookups keyed
             # by key_path elements, re.escape(p["key"]), Path(p["path"]), a non-str
@@ -81,6 +81,9 @@ def cmd_apply(ids, state, data_root, evidence):
             # schema/guard only check shape, not every field's presence or type — must
             # fail cleanly here rather than crash the whole decide/apply run (mirrors
             # cmd_decide's amend guard wrapper, which catches the same class).
+            # OSError: the diff branch's render-time target.read_text() can hit a
+            # directory named CLAUDE.md or an unreadable file — fail just this rec,
+            # not the whole batch.
             ledger_mod.append(lpath, {"id": rid, "status": "apply_failed",
                                       "errors": [f"malformed payload: {err}"],
                                       "evidence_hash": e.get("evidence_hash")})
