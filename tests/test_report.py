@@ -1,4 +1,4 @@
-import sys, pathlib, unittest
+import json, sys, pathlib, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 import report
 
@@ -21,6 +21,10 @@ TREND = [{"run_id": "2026-06-24", "n_sessions": 50, "tokens_per_session": 1000.0
           "correction_rate": 1.5, "duplicate_read_rate": 0.5,
           "base_context_est": 40000, "unused_surface_count": 12}]
 USAGE = {"totals": {"sessions": 100}, "parse": {"skipped_lines": 3, "redactions": 5}}
+USAGE_MODELS = {"totals": {"sessions": 100}, "parse": {"skipped_lines": 0, "redactions": 0},
+                 "per_model": {"claude-opus-4-8": {"input": 500, "output": 2000, "sessions": 10},
+                               "claude-sonnet-5": {"input": 300, "output": 900, "sessions": 20}},
+                 "corrections_by_model": {"claude-opus-4-8": 3, "claude-sonnet-5": 1}}
 
 
 class TestReport(unittest.TestCase):
@@ -56,6 +60,69 @@ class TestReport(unittest.TestCase):
                  "baseline": 2.0, "value": 3.0, "n": 12, "verdict": "regressed", "rel_change": 0.5}]
         md = report.render("r", [], DROPPED, rows, [], USAGE, {})
         self.assertIn("· rollback: /self-optimize rollback ccc333", md)
+
+    def test_model_performance_table(self):
+        md = report.render("r", [], DROPPED, [], [], USAGE_MODELS, {})
+        self.assertIn("## Model performance", md)
+        self.assertIn("| claude-opus-4-8 | 10 | 2,000 | 3 |", md)
+        self.assertIn("| claude-sonnet-5 | 20 | 900 | 1 |", md)
+
+    def test_no_model_table_when_absent(self):
+        md = report.render("r", [], DROPPED, [], [], USAGE, {})
+        self.assertNotIn("## Model performance", md)
+
+    def test_cumulative_verified_improvement_rendered(self):
+        cum = [("correction_rate", [4.0, 2]), ("tokens_per_session", [120.0, 1])]
+        md = report.render("r", [], DROPPED, [], TREND, USAGE, {}, cumulative=cum)
+        self.assertIn("Cumulative verified improvement", md)
+        self.assertIn("correction_rate: 4.00 (2 verified changes)", md)
+        self.assertIn("tokens_per_session: 120.00 (1 verified change)", md)
+
+    def test_no_cumulative_section_when_empty(self):
+        md = report.render("r", [], DROPPED, [], [], USAGE, {})
+        self.assertNotIn("Cumulative verified improvement", md)
+
+    def test_cumulative_savings_sums_verified_entries_only(self):
+        entries = {
+            "a": {"status": "verified", "rec": {"metric": {"key": "correction_rate"}},
+                  "baseline": {"value": 5.0}, "measured": {"value": 1.0}},
+            "b": {"status": "regressed", "rec": {"metric": {"key": "correction_rate"}},
+                  "baseline": {"value": 5.0}, "measured": {"value": 9.0}},
+            "c": {"status": "verified", "rec": {"metric": {"key": "correction_rate"}},
+                  "baseline": {"value": 3.0}, "measured": {"value": 2.0}},
+        }
+        out = dict(report._cumulative_savings(entries))
+        self.assertEqual(out["correction_rate"], [5.0, 2])   # (5-1)+(3-2)=5.0, count=2
+
+    def test_verified_deltas_this_run_only(self):
+        rows = [
+            {"id": "a", "metric": "correction_rate", "baseline": 5.0, "value": 1.0,
+             "verdict": "verified"},
+            {"id": "b", "metric": "correction_rate", "baseline": 3.0, "value": 2.0,
+             "verdict": "verified"},
+            {"id": "c", "metric": "tokens_per_session", "baseline": 1000.0, "value": 400.0,
+             "verdict": "regressed"},
+        ]
+        self.assertEqual(report._verified_deltas(rows), {"correction_rate": 5.0})
+
+    def test_verified_deltas_written_to_runs_jsonl(self):
+        import tempfile
+        import so_config
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = pathlib.Path(tmp.name)
+        state, ev = base / "state", base / "ev"
+        state.mkdir(); ev.mkdir()
+        (ev / "findings.json").write_text(json.dumps({"findings": [], "dropped": DROPPED}))
+        (ev / "usage.json").write_text(json.dumps(USAGE))
+        (ev / "verify.json").write_text(json.dumps({"rows": [
+            {"id": "x", "title": "t", "metric": "correction_rate", "baseline": 5.0,
+             "value": 1.0, "n": 12, "verdict": "verified", "rel_change": -0.8, "p_value": 0.01}]}))
+        so_config.load_config(state)
+        report.main(["--evidence", str(ev), "--state", str(state), "--run-id", "r1"])
+        lines = (state / "state" / "runs.jsonl").read_text().splitlines()
+        rows = [json.loads(x) for x in lines]
+        self.assertEqual(rows[-1]["verified_deltas"], {"correction_rate": 4.0})
 
 
 if __name__ == "__main__":

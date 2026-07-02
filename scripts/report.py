@@ -22,6 +22,42 @@ def _impact(rec):
     return f"~{d:,} tok/window" if d else rec["impact"].get("ordinal", "?")
 
 
+def _cumulative_savings(entries: dict) -> list:
+    """Per-metric cumulative verified improvement across every run: sums
+    baseline-minus-measured over every ledger entry whose CURRENT status is
+    'verified' (ledger.load is last-entry-wins, so a later regression on the
+    same id drops it out of this sum automatically)."""
+    totals = {}
+    for e in entries.values():
+        if e.get("status") != "verified":
+            continue
+        rec = e.get("rec") or {}
+        metric = (rec.get("metric") or {}).get("key")
+        base = (e.get("baseline") or {}).get("value")
+        val = (e.get("measured") or {}).get("value")
+        if not metric or base is None or val is None:
+            continue
+        t = totals.setdefault(metric, [0.0, 0])
+        t[0] += base - val
+        t[1] += 1
+    return sorted(totals.items())
+
+
+def _verified_deltas(verify_rows: list) -> dict:
+    """This run's verified-metric deltas (baseline minus current) for the
+    runs.jsonl row — NOT the all-time cumulative total in the Trend section,
+    which reads the full ledger instead."""
+    deltas = {}
+    for v in verify_rows:
+        if v.get("verdict") != "verified":
+            continue
+        base, val, metric = v.get("baseline"), v.get("value"), v.get("metric")
+        if base is None or val is None or not metric:
+            continue
+        deltas[metric] = deltas.get(metric, 0.0) + (base - val)
+    return deltas
+
+
 def _analyst_tokens_line(tokens) -> str:
     if not tokens:
         return "n/a"
@@ -47,7 +83,7 @@ def _parse_analyst_tokens(raw: str | None) -> dict | None:
     return out or None
 
 
-def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer) -> str:
+def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer, cumulative=None) -> str:
     L = [f"# self-optimize report — {run_id}", ""]
     if verify_rows:
         L += ["## Applied changes: outcomes", "",
@@ -84,15 +120,34 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer) ->
             body = p.get("diff") or p.get("description") or json.dumps(p, indent=1)
             L += ["- manual action:", "", "```", body, "```"]
         L.append("")
-    if trend_rows:
-        L += ["## Trend", "",
-              "| run | sessions | tok/session | corrections | dup reads | base ctx | unused |",
-              "|---|---|---|---|---|---|---|"]
-        for t in trend_rows:
-            L.append(f"| {t['run_id']} | {t['n_sessions']} | {_num(t.get('tokens_per_session'))} | "
-                     f"{_num(t.get('correction_rate'))} | {_num(t.get('duplicate_read_rate'))} | "
-                     f"{t.get('base_context_est') if t.get('base_context_est') is not None else '-'} | "
-                     f"{t.get('unused_surface_count') if t.get('unused_surface_count') is not None else '-'} |")
+    cumulative = cumulative or []
+    if trend_rows or cumulative:
+        L.append("## Trend")
+        L.append("")
+        if trend_rows:
+            L += ["| run | sessions | tok/session | corrections | dup reads | base ctx | unused |",
+                  "|---|---|---|---|---|---|---|"]
+            for t in trend_rows:
+                L.append(f"| {t['run_id']} | {t['n_sessions']} | {_num(t.get('tokens_per_session'))} | "
+                         f"{_num(t.get('correction_rate'))} | {_num(t.get('duplicate_read_rate'))} | "
+                         f"{t.get('base_context_est') if t.get('base_context_est') is not None else '-'} | "
+                         f"{t.get('unused_surface_count') if t.get('unused_surface_count') is not None else '-'} |")
+            L.append("")
+        if cumulative:
+            L.append("**Cumulative verified improvement**")
+            L.append("")
+            for metric, (delta, count) in cumulative:
+                plural = "change" if count == 1 else "changes"
+                L.append(f"- {metric}: {_num(delta)} ({count} verified {plural})")
+            L.append("")
+    if usage.get("per_model"):
+        L += ["## Model performance", "",
+              "| model | sessions | output tokens | corrections |", "|---|---|---|---|"]
+        corrections_by_model = usage.get("corrections_by_model", {})
+        for model in sorted(usage["per_model"]):
+            pm = usage["per_model"][model]
+            L.append(f"| {_cell(model)} | {pm.get('sessions', 0)} | "
+                     f"{pm.get('output', 0):,} | {corrections_by_model.get(model, 0)} |")
         L.append("")
     L += ["## Run footer", "",
           f"- window sessions: {usage['totals']['sessions']}; "
@@ -139,8 +194,10 @@ def main(argv=None):
     if (evdir / "verify.json").exists():
         verify_rows = json.loads((evdir / "verify.json").read_text())["rows"]
     tokens = _parse_analyst_tokens(a.analyst_tokens)
+    ledger_entries = ledger_mod.load(state / "state" / "ledger.jsonl")
+    cumulative = _cumulative_savings(ledger_entries)
     md = render(a.run_id, fdata["findings"], fdata["dropped"], verify_rows,
-                _trend(state), usage, {"analyst_tokens": tokens})
+                _trend(state), usage, {"analyst_tokens": tokens}, cumulative=cumulative)
     rdir = Path(cfg["report_dir"])
     rdir.mkdir(parents=True, exist_ok=True)
     out = rdir / f"{a.run_id}.md"
@@ -148,7 +205,8 @@ def main(argv=None):
     ledger_mod.append_run(state / "state" / "runs.jsonl",
                           {"run_id": a.run_id, "n_sessions": usage["totals"]["sessions"],
                            "findings": len(fdata["findings"]),
-                           "analyst_tokens": tokens})
+                           "analyst_tokens": tokens,
+                           "verified_deltas": _verified_deltas(verify_rows)})
     _prune_evidence(state, cfg["retain_runs"])
     print(f"REPORT: {out}")
     for i, r in enumerate(fdata["findings"][:5], 1):
