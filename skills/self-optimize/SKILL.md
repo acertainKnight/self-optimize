@@ -47,11 +47,13 @@ echo its output verbatim to the user, and stop:
    - `subagent_type: "self-optimize:transcript-miner"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/usage.json, EV/samples.json, EV/sessions.json>. Return the JSON array."
    - `subagent_type: "self-optimize:config-auditor"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/inventory.json, EV/activation.json, EV/usage.json>. Rules file: ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json. Return the JSON array."
    Save each agent's final output verbatim with the Write tool to `EV/miner.json` and
-   `EV/auditor.json`. Note the total tokens the two agents used if visible.
+   `EV/auditor.json`, then run `chmod 600 EV/miner.json EV/auditor.json`. Note the
+   total tokens the two agents used if visible.
 5. **Synthesize:**
    `python3 SCRIPTS/synth.py --evidence EV --data-root DATA_ROOT --state STATE --rules ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json --analyst EV/miner.json --analyst EV/auditor.json --out EV/findings.json`
 6. **Report:**
-   `python3 SCRIPTS/report.py --evidence EV --state STATE --run-id RUN_ID [--analyst-tokens N]`
+   `python3 SCRIPTS/report.py --evidence EV --state STATE --run-id RUN_ID [--analyst-tokens miner=<n>,auditor=<m>]`
+   (build the value from the tokens noted in step 4, e.g. `miner=8000,auditor=4300`)
    Show the user: the report path, the outcomes section verdicts if any, and the
    printed top-5 with their `/self-optimize apply <id>` / `reject <id>` hints.
 

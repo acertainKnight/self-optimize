@@ -66,6 +66,17 @@ class TestVerify(unittest.TestCase):
         apply_mod.cmd_rollback("r1", state)   # the report's one-command rollback must work
         self.assertEqual(json.loads((data / "settings.json").read_text()), {"model": "opusplan"})
 
+    def test_main_writes_verify_with_600_perms(self):
+        import json, tempfile
+        base = pathlib.Path(tempfile.mkdtemp())
+        state, ev = base / "state", base / "ev"
+        ev.mkdir()
+        (ev / "sessions.json").write_text(json.dumps({"sessions": []}))
+        out = ev / "verify.json"
+        verify.main(["--evidence", str(ev), "--state", str(state), "--out", str(out)])
+        mode = out.stat().st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
 
 if __name__ == "__main__":
     unittest.main()

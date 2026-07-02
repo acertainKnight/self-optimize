@@ -11,7 +11,6 @@ DEFAULTS = {
     "report_dir": "",  # empty -> <state>/reports
     "project_include": ["*"],
     "project_exclude": [],
-    "project_weights": "auto",
     "since_days": 30,
     "sample_caps": {"excerpts": 40, "tokens_per_excerpt": 1500, "total_tokens": 60000},
     "correction_regex": "",  # empty -> collector default

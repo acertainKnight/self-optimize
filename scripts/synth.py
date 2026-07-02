@@ -162,7 +162,9 @@ def main(argv=None):
     for rec in findings:
         ledger_mod.append(lpath, {"id": rec["id"], "status": "proposed", "rec": rec,
                                   "evidence_hash": rec["evidence_hash"]})
-    Path(a.out).write_text(json.dumps({"findings": findings, "dropped": dropped}, indent=1))
+    out_path = Path(a.out)
+    out_path.write_text(json.dumps({"findings": findings, "dropped": dropped}, indent=1))
+    out_path.chmod(0o600)
     print(f"findings={len(findings)} dropped_invalid={dropped['invalid']} "
           f"dropped_citations={dropped['citations']} dropped_guard={dropped['guard']} "
           f"suppressed={len(dropped['suppressed'])}")

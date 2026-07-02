@@ -82,6 +82,26 @@ class TestSynth(unittest.TestCase):
         self.assertFalse(synth.check_citation(None, EV))
         self.assertFalse(synth.check_citation(42, EV))
 
+    def test_main_writes_findings_with_600_perms(self):
+        import json, tempfile
+        base = pathlib.Path(tempfile.mkdtemp())
+        ev, state = base / "ev", base / "state"
+        ev.mkdir()
+        (ev / "usage.json").write_text(json.dumps({"totals": {"sessions": 0}}))
+        (ev / "sessions.json").write_text(json.dumps({"sessions": []}))
+        (ev / "activation.json").write_text(json.dumps({"items": {}}))
+        (ev / "samples.json").write_text(json.dumps({"samples": []}))
+        rules = base / "rules.json"
+        rules.write_text(json.dumps({"rules": []}))
+        analyst = base / "miner.json"
+        analyst.write_text("[]")
+        out = base / "findings.json"
+        synth.main(["--evidence", str(ev), "--data-root", str(base / "claude"),
+                    "--state", str(state), "--rules", str(rules),
+                    "--analyst", str(analyst), "--out", str(out)])
+        mode = out.stat().st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,12 @@ class TestConfig(unittest.TestCase):
             else:
                 os.environ["CLAUDE_CONFIG_DIR"] = old
 
+    def test_project_weights_dead_key_deleted(self):
+        self.assertNotIn("project_weights", so_config.DEFAULTS)
+        with tempfile.TemporaryDirectory() as d:
+            cfg = so_config.load_config(pathlib.Path(d) / "so")
+            self.assertNotIn("project_weights", cfg)
+
 
 if __name__ == "__main__":
     unittest.main()

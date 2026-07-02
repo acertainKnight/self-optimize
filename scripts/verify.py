@@ -52,7 +52,9 @@ def main(argv=None):
     inv_f = ev / "inventory.json"
     inventory = json.loads(inv_f.read_text()) if inv_f.exists() else None
     rows = verify_entries(entries, sessions, inventory, cfg)
-    Path(a.out).write_text(json.dumps({"rows": rows}, indent=1))
+    out_path = Path(a.out)
+    out_path.write_text(json.dumps({"rows": rows}, indent=1))
+    out_path.chmod(0o600)
     for r in rows:
         if r["verdict"] in ("verified", "regressed"):
             # carry forward apply context: ledger.load is last-entry-wins, so the

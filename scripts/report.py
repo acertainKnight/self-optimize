@@ -22,6 +22,31 @@ def _impact(rec):
     return f"~{d:,} tok/window" if d else rec["impact"].get("ordinal", "?")
 
 
+def _analyst_tokens_line(tokens) -> str:
+    if not tokens:
+        return "n/a"
+    parts = ", ".join(f"{k}={v:,}" for k, v in tokens.items())
+    return f"{parts} (total {sum(tokens.values()):,})"
+
+
+def _parse_analyst_tokens(raw: str | None) -> dict | None:
+    """'miner=1200,auditor=800' -> {'miner': 1200, 'auditor': 800}; malformed
+    pairs are skipped rather than raising — a bad flag value shouldn't kill the report."""
+    if not raw:
+        return None
+    out = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, _, v = part.partition("=")
+        try:
+            out[k.strip()] = int(v.strip())
+        except ValueError:
+            continue
+    return out or None
+
+
 def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer) -> str:
     L = [f"# self-optimize report — {run_id}", ""]
     if verify_rows:
@@ -29,7 +54,10 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer) ->
               "| id | title | metric | verdict | baseline | now | n |",
               "|---|---|---|---|---|---|---|"]
         for v in verify_rows:
-            L.append(f"| `{v['id']}` | {_cell(v['title'])} | {_cell(v['metric'])} | **{v['verdict']}** | "
+            verdict_cell = f"**{v['verdict']}**"
+            if v["verdict"] == "regressed":
+                verdict_cell += f" · rollback: /self-optimize rollback {v['id']}"
+            L.append(f"| `{v['id']}` | {_cell(v['title'])} | {_cell(v['metric'])} | {verdict_cell} | "
                      f"{_num(v.get('baseline'))} | {_num(v.get('value'))} | {v.get('n')} |")
         L.append("")
     L += [f"## Findings ({len(findings)})", ""]
@@ -73,7 +101,7 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer) ->
           f"- findings dropped — invalid: {dropped['invalid']}, "
           f"failed citations: {dropped['citations']}, guard: {dropped['guard']}, "
           f"suppressed by ledger: {len(dropped['suppressed'])}",
-          f"- analyst tokens: {footer.get('analyst_tokens', 'n/a')}", ""]
+          f"- analyst tokens: {_analyst_tokens_line(footer.get('analyst_tokens'))}", ""]
     return "\n".join(L) + "\n"
 
 
@@ -100,7 +128,7 @@ def main(argv=None):
     ap.add_argument("--evidence", required=True)
     ap.add_argument("--state", default=None)
     ap.add_argument("--run-id", required=True)
-    ap.add_argument("--analyst-tokens", type=int, default=None)
+    ap.add_argument("--analyst-tokens", default=None)
     a = ap.parse_args(argv)
     _, state = so_config.resolve(None, a.state)
     cfg = so_config.load_config(state)
@@ -110,8 +138,9 @@ def main(argv=None):
     verify_rows = []
     if (evdir / "verify.json").exists():
         verify_rows = json.loads((evdir / "verify.json").read_text())["rows"]
+    tokens = _parse_analyst_tokens(a.analyst_tokens)
     md = render(a.run_id, fdata["findings"], fdata["dropped"], verify_rows,
-                _trend(state), usage, {"analyst_tokens": a.analyst_tokens})
+                _trend(state), usage, {"analyst_tokens": tokens})
     rdir = Path(cfg["report_dir"])
     rdir.mkdir(parents=True, exist_ok=True)
     out = rdir / f"{a.run_id}.md"
@@ -119,7 +148,7 @@ def main(argv=None):
     ledger_mod.append_run(state / "state" / "runs.jsonl",
                           {"run_id": a.run_id, "n_sessions": usage["totals"]["sessions"],
                            "findings": len(fdata["findings"]),
-                           "analyst_tokens": a.analyst_tokens})
+                           "analyst_tokens": tokens})
     _prune_evidence(state, cfg["retain_runs"])
     print(f"REPORT: {out}")
     for i, r in enumerate(fdata["findings"][:5], 1):

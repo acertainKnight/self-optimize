@@ -25,7 +25,8 @@ USAGE = {"totals": {"sessions": 100}, "parse": {"skipped_lines": 3, "redactions"
 
 class TestReport(unittest.TestCase):
     def test_render_sections_and_order(self):
-        md = report.render("2026-07-01", FINDINGS, DROPPED, VERIFY, TREND, USAGE, {"analyst_tokens": 12345})
+        md = report.render("2026-07-01", FINDINGS, DROPPED, VERIFY, TREND, USAGE,
+                            {"analyst_tokens": {"miner": 8000, "auditor": 4345}})
         self.assertLess(md.index("Applied changes: outcomes"), md.index("## Findings"))
         self.assertIn("**verified**", md)
         self.assertIn("~9,000 tok/window", md)
@@ -34,6 +35,7 @@ class TestReport(unittest.TestCase):
         self.assertIn("previously rejected: too soon", md)
         self.assertIn("failed citations: 2", md)
         self.assertIn("| 2026-06-24 | 50 |", md)
+        self.assertIn("analyst tokens: miner=8,000, auditor=4,345 (total 12,345)", md)
 
     def test_pipe_in_title_does_not_break_table(self):
         f = dict(FINDINGS[0])
@@ -48,6 +50,12 @@ class TestReport(unittest.TestCase):
                  "value": None, "n": 2, "verdict": "inconclusive", "rel_change": None}]
         md = report.render("r", [], DROPPED, rows, [], USAGE, {})
         self.assertIn("inconclusive", md)
+
+    def test_regressed_row_prints_rollback_command(self):
+        rows = [{"id": "ccc333", "title": "Old change", "metric": "correction_rate",
+                 "baseline": 2.0, "value": 3.0, "n": 12, "verdict": "regressed", "rel_change": 0.5}]
+        md = report.render("r", [], DROPPED, rows, [], USAGE, {})
+        self.assertIn("· rollback: /self-optimize rollback ccc333", md)
 
 
 if __name__ == "__main__":
