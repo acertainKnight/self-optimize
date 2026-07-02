@@ -37,6 +37,7 @@ def verify_entries(entries: dict, sessions: list, inventory, cfg: dict) -> list:
         val, n = metriclib.compute_metric(m, sessions, inventory, after_ts=e.get("applied_at"))
         base = (e.get("baseline") or {}).get("value")
         row = {"id": rid, "title": rec.get("title", ""), "metric": m["key"],
+               "direction": m.get("direction"),
                "baseline": base, "value": val, "n": n,
                "verdict": "inconclusive", "rel_change": None, "p_value": None}
         if n >= cfg["verify"]["min_sessions"] and val is not None and base not in (None, 0):

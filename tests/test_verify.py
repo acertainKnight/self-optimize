@@ -21,6 +21,7 @@ class TestVerify(unittest.TestCase):
     def test_verified_regressed_inconclusive(self):
         rows = verify.verify_entries({"a": entry(2.0)}, sessions([0, 0, 0]), None, CFG)
         self.assertEqual(rows[0]["verdict"], "verified")       # 2.0 -> 0.0, direction down
+        self.assertEqual(rows[0]["direction"], "down")         # report needs it for delta sign
         rows = verify.verify_entries({"a": entry(1.0)}, sessions([3, 3, 3]), None, CFG)
         self.assertEqual(rows[0]["verdict"], "regressed")      # 1.0 -> 3.0
         rows = verify.verify_entries({"a": entry(2.0)}, sessions([0]), None, CFG)

@@ -23,10 +23,11 @@ def _impact(rec):
 
 
 def _cumulative_savings(entries: dict) -> list:
-    """Per-metric cumulative verified improvement across every run: sums
-    baseline-minus-measured over every ledger entry whose CURRENT status is
+    """Per-metric cumulative verified improvement across every run: sums the
+    signed improvement over every ledger entry whose CURRENT status is
     'verified' (ledger.load is last-entry-wins, so a later regression on the
-    same id drops it out of this sum automatically)."""
+    same id drops it out of this sum automatically). Improvement is positive
+    regardless of the metric's better-direction."""
     totals = {}
     for e in entries.values():
         if e.get("status") != "verified":
@@ -37,16 +38,17 @@ def _cumulative_savings(entries: dict) -> list:
         val = (e.get("measured") or {}).get("value")
         if not metric or base is None or val is None:
             continue
+        direction = (rec.get("metric") or {}).get("direction")
         t = totals.setdefault(metric, [0.0, 0])
-        t[0] += base - val
+        t[0] += (val - base) if direction == "up" else (base - val)
         t[1] += 1
     return sorted(totals.items())
 
 
 def _verified_deltas(verify_rows: list) -> dict:
-    """This run's verified-metric deltas (baseline minus current) for the
-    runs.jsonl row — NOT the all-time cumulative total in the Trend section,
-    which reads the full ledger instead."""
+    """This run's verified-metric improvements (positive = better, using the
+    row's direction from verify.py) for the runs.jsonl row — NOT the all-time
+    cumulative total in the Trend section, which reads the full ledger instead."""
     deltas = {}
     for v in verify_rows:
         if v.get("verdict") != "verified":
@@ -54,7 +56,8 @@ def _verified_deltas(verify_rows: list) -> dict:
         base, val, metric = v.get("baseline"), v.get("value"), v.get("metric")
         if base is None or val is None or not metric:
             continue
-        deltas[metric] = deltas.get(metric, 0.0) + (base - val)
+        d = (val - base) if v.get("direction") == "up" else (base - val)
+        deltas[metric] = deltas.get(metric, 0.0) + d
     return deltas
 
 

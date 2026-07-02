@@ -94,6 +94,16 @@ class TestReport(unittest.TestCase):
         out = dict(report._cumulative_savings(entries))
         self.assertEqual(out["correction_rate"], [5.0, 2])   # (5-1)+(3-2)=5.0, count=2
 
+    def test_direction_up_deltas_positive(self):
+        # up-is-better verified metric: improvement must render positive, not sign-flipped
+        entries = {"a": {"status": "verified",
+                         "rec": {"metric": {"key": "sessions_ok", "direction": "up"}},
+                         "baseline": {"value": 1.0}, "measured": {"value": 3.0}}}
+        self.assertEqual(dict(report._cumulative_savings(entries))["sessions_ok"], [2.0, 1])
+        rows = [{"id": "a", "metric": "sessions_ok", "direction": "up",
+                 "baseline": 1.0, "value": 3.0, "verdict": "verified"}]
+        self.assertEqual(report._verified_deltas(rows), {"sessions_ok": 2.0})
+
     def test_verified_deltas_this_run_only(self):
         rows = [
             {"id": "a", "metric": "correction_rate", "baseline": 5.0, "value": 1.0,
