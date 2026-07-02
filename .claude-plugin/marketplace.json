@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "self-optimize",
+  "description": "Self-optimize: a measured optimization loop for Claude Code.",
+  "owner": { "name": "Nick" },
+  "plugins": [
+    {
+      "name": "self-optimize",
+      "description": "Mines transcripts + config, recommends with evidence, applies safely, verifies on real usage.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
