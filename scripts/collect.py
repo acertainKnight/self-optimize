@@ -25,9 +25,14 @@ def iter_records(path: Path, counters: dict):
             if not line:
                 continue
             try:
-                yield json.loads(line)
+                rec = json.loads(line)
             except json.JSONDecodeError:
                 counters["skipped_lines"] += 1
+                continue
+            if not isinstance(rec, dict):
+                counters["skipped_lines"] += 1
+                continue
+            yield rec
 
 
 def _text(msg: dict) -> str:

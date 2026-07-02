@@ -35,6 +35,20 @@ class TestParseSession(unittest.TestCase):
         self.assertEqual(self.s["activation"]["skill:tdd"], 2)    # tool_use + attributionSkill
         self.assertIn("mcp_tool:mcp__plugin_linear_linear__get_issue", self.s["activation"])
 
+    def test_valid_json_non_object_lines_are_skipped(self):
+        import os, tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+            f.write('"just a string"\n42\n[1, 2]\n')
+            f.write('{"type": "user", "uuid": "u1", "sessionId": "S", '
+                    '"timestamp": "2026-06-20T10:00:00Z", '
+                    '"message": {"role": "user", "content": "hello"}}\n')
+            path = f.name
+        counters = {"skipped_lines": 0}
+        s = collect.parse_session(pathlib.Path(path), "p", collect.DEFAULT_CORRECTION_RE, counters)
+        os.unlink(path)
+        self.assertEqual(counters["skipped_lines"], 3)
+        self.assertEqual(s["turns"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
