@@ -35,6 +35,14 @@ class TestReport(unittest.TestCase):
         self.assertIn("failed citations: 2", md)
         self.assertIn("| 2026-06-24 | 50 |", md)
 
+    def test_pipe_in_title_does_not_break_table(self):
+        f = dict(FINDINGS[0])
+        f["title"] = "before | after"
+        md = report.render("r", [f], DROPPED, [], [], USAGE, {})
+        row = next(l for l in md.splitlines() if "before" in l and l.startswith("| 1 |"))
+        self.assertIn("before \\| after", row)
+        self.assertEqual(row.count(" | "), 5)  # six columns stay intact
+
     def test_verify_none_values_do_not_crash(self):
         rows = [{"id": "x", "title": "t", "metric": "correction_rate", "baseline": None,
                  "value": None, "n": 2, "verdict": "inconclusive", "rel_change": None}]

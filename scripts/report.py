@@ -9,6 +9,10 @@ from pathlib import Path
 import ledger as ledger_mod
 
 
+def _cell(x) -> str:
+    return str(x).replace("|", "\\|").replace("\n", " ")
+
+
 def _num(x):
     return f"{x:.2f}" if isinstance(x, (int, float)) else "-"
 
@@ -25,15 +29,15 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer) ->
               "| id | title | metric | verdict | baseline | now | n |",
               "|---|---|---|---|---|---|---|"]
         for v in verify_rows:
-            L.append(f"| `{v['id']}` | {v['title']} | {v['metric']} | **{v['verdict']}** | "
+            L.append(f"| `{v['id']}` | {_cell(v['title'])} | {_cell(v['metric'])} | **{v['verdict']}** | "
                      f"{_num(v.get('baseline'))} | {_num(v.get('value'))} | {v.get('n')} |")
         L.append("")
     L += [f"## Findings ({len(findings)})", ""]
     if findings:
         L += ["| # | id | category | impact | tier | title |", "|---|---|---|---|---|---|"]
         for i, r in enumerate(findings, 1):
-            L.append(f"| {i} | `{r['id']}` | {r['category']} | {_impact(r)} | "
-                     f"{r['action']['tier']} | {r['title']} |")
+            L.append(f"| {i} | `{r['id']}` | {_cell(r['category'])} | {_impact(r)} | "
+                     f"{r['action']['tier']} | {_cell(r['title'])} |")
         L.append("")
     for i, r in enumerate(findings, 1):
         L += [f"### {i}. {r['title']}  `{r['id']}`", "",
