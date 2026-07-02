@@ -620,9 +620,10 @@ class TestDecide(unittest.TestCase):
         # item 1's applied row must survive, not be clobbered by item 2
         self.assertEqual(led[expected_new]["status"], "applied")
 
-    def test_amend_bearing_autopicked_file_refused(self):
-        # amend authors actions, so a file auto-picked as newest in ~/Downloads
-        # (no explicit path) must not silently drive amends — refuse the whole decide
+    def test_amend_bearing_autopicked_file_proceeds(self):
+        # amend rides the normal download→decide flow: an auto-picked file (no explicit
+        # path) with amend entries proceeds like any other — decide is human-invoked and
+        # the authored action is re-validated through guard/templates + snapshotted
         valid_action = {"harness": "claude-code", "tier": "A", "type": "setting_change",
                         "payload": {"file": "settings.json",
                                     "key_path": ["skillOverrides", "dusty"], "value": "name-only"}}
@@ -632,25 +633,24 @@ class TestDecide(unittest.TestCase):
             amend=[{"id": "r2", "reason": "swap", "action": valid_action}])))
         with unittest.mock.patch.object(apply_mod, "_downloads_dir", return_value=self.downloads):
             result = apply_mod.cmd_decide(None, self.state, self.data, self.ev)   # auto-pick
-        self.assertEqual(result, {})
-        # nothing applied — not even the apply:[r1] that rode along
-        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
+        led = ledger.load(self.lpath)
+        self.assertEqual(led["r1"]["status"], "applied")      # apply rode along fine
+        self.assertEqual(led["r2"]["status"], "rejected")     # original amended-out
+        self.assertEqual(len(result["amended"]), 1)           # replacement applied
 
-    def test_amend_bearing_empty_string_path_refused(self):
-        # "" is falsy → _find_decisions_file auto-picks from Downloads, so the guard
-        # must treat it like None (a wrapper substituting into `decide [path]` could
-        # pass "") — not skip the refusal because it isn't literally None
+    def test_amend_bearing_empty_string_path_proceeds(self):
+        # "" is falsy → _find_decisions_file auto-picks; behaves identically to None
         valid_action = {"harness": "claude-code", "tier": "A", "type": "setting_change",
                         "payload": {"file": "settings.json",
                                     "key_path": ["skillOverrides", "dusty"], "value": "name-only"}}
         dfile = self.downloads / "self-optimize-decisions-ev.json"
         dfile.write_text(json.dumps(self._decisions(
-            apply=["r1"], reject=[], assist=[],
+            apply=[], reject=[], assist=[],
             amend=[{"id": "r2", "reason": "swap", "action": valid_action}])))
         with unittest.mock.patch.object(apply_mod, "_downloads_dir", return_value=self.downloads):
             result = apply_mod.cmd_decide("", self.state, self.data, self.ev)   # empty string
-        self.assertEqual(result, {})
-        self.assertEqual(ledger.load(self.lpath)["r1"]["status"], "proposed")
+        self.assertEqual(len(result["amended"]), 1)
+        self.assertEqual(ledger.load(self.lpath)["r2"]["status"], "rejected")
 
     def test_amend_bearing_explicit_path_proceeds(self):
         valid_action = {"harness": "claude-code", "tier": "A", "type": "setting_change",

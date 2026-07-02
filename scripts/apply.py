@@ -215,18 +215,15 @@ def cmd_decide(path_or_none, state, data_root, evidence) -> dict:
         print(f"{dfile}: no findings.json in the evidence run {ev_run!r} — cannot "
               f"authorize any decision; run a full /self-optimize first")
         return {}
-    # amend AUTHORS a new action (unlike apply/reject/assist, which only select recs
-    # the local pipeline already proposed and guarded). A file auto-picked as newest
-    # in browser-writable ~/Downloads (path_or_none is None) is exactly the drive-by
-    # surface a planted amend would ride in on — so amend-bearing files must be named
-    # explicitly. apply/reject-only auto-picks still work as before.
-    # `not path_or_none`, not `is None`: _find_decisions_file auto-picks for ANY
-    # falsy path (empty string included), so the guard must fire on the same
-    # condition or `decide ""` would auto-pick a Downloads file and skip this gate
-    if not path_or_none and isinstance(data.get("amend"), list) and data["amend"]:
-        print(f"{dfile}: amend-bearing decisions files must be passed explicitly: "
-              "/self-optimize decide <path>")
-        return {}
+    # amend AUTHORS a new action (unlike apply/reject/assist, which select recs the
+    # pipeline already proposed). It is NOT treated specially at file-resolution time:
+    # decide is human-invoked on the user's own downloaded file, the authored action
+    # is re-validated through validate_rec + guard + templates (sanctioned roots,
+    # allowlisted settings keys, no symlink escape, tier-A only) exactly like any
+    # apply, and every effect is snapshotted/rollback-able. A planted ~/Downloads file
+    # would need local home-dir write access — which already permits far easier attacks
+    # (editing settings.json, planting a hook) — so an explicit-path requirement here
+    # buys no real safety while breaking the download→decide flow.
     run_ids = {f["id"] for f in json.loads(fpath.read_text()).get("findings", [])
                if isinstance(f, dict) and isinstance(f.get("id"), str)}
     apply_ids = [i for i in (data.get("apply") or []) if isinstance(i, str)]

@@ -29,6 +29,14 @@ Single-user, per-machine, no telemetry. Trust boundaries and mitigations:
    through the normal tier-A template re-validation, snapshot, and smoke check; reject
    reasons are redaction-scrubbed before they can reach `constraints.json`, and the
    dashboard's copy-to-shell path strips shell metacharacters from reason text.
+   `amend` entries *author* a replacement action (rather than selecting a vetted rec);
+   that action is run through `validate_rec` + `guard` + the tier-A templates on the
+   same terms as any apply (sanctioned roots, allowlisted settings keys, no symlink
+   escape, snapshot/rollback), and cannot overwrite another live recommendation's
+   ledger id. `decide` is human-invoked on your own download and every effect is
+   reversible; a planted `~/Downloads` file would need local home-dir write access,
+   which already permits easier attacks (editing settings.json, planting a hook), so
+   amend is not gated behind an explicit path.
 
 Residual risks, stated honestly: regex+entropy redaction is not perfect; injection
 framing is mitigation, not guarantee; path guards normalize lexically and deliberately

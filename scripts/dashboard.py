@@ -572,7 +572,7 @@ def render_dashboard(run_id, findings, dropped, verify_rows, cumulative, usage,
 </div>
 <div class="preview"><code id="cmd-preview">/self-optimize decide</code></div>
 <div class="warning" id="reject-warning" hidden>Give every rejection and amendment a reason before downloading or copying, and fix any invalid amendment JSON.</div>
-<div class="warning" id="amend-note" hidden>Amendments aren't expressible as a command &mdash; download decisions.json and run /self-optimize decide &lt;path-to-downloaded-file&gt; (amend-bearing files must be passed by explicit path).</div>
+<div class="warning" id="amend-note" hidden>Amendments aren't expressible as a copyable command &mdash; download decisions.json and run /self-optimize decide (it picks up your newest download automatically).</div>
 <div class="actions">
 <button id="download-btn">Download decisions.json</button>
 <button id="copy-btn">Copy command</button>
