@@ -48,12 +48,25 @@ def _scan_agent_dir(base: Path, source: str) -> list:
     return out
 
 
+def _dedupe(items: list) -> list:
+    """User-level entries shadow plugin entries of the same id (documented precedence)."""
+    by_id = {}
+    for it in items:
+        prev = by_id.get(it["id"])
+        if prev is None or (prev["source"] != "user" and it["source"] == "user"):
+            by_id[it["id"]] = it
+    return list(by_id.values())
+
+
 def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
     data_root = Path(data_root)
     settings = {}
     sfile = data_root / "settings.json"
     if sfile.exists():
-        settings = json.loads(sfile.read_text())
+        try:
+            settings = json.loads(sfile.read_text())
+        except (json.JSONDecodeError, OSError):
+            settings = {}
     overrides = settings.get("skillOverrides", {}) or {}
     enabled = settings.get("enabledPlugins", {}) or {}
 
@@ -62,11 +75,13 @@ def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
     installed = json.loads(ipath.read_text())["plugins"] if ipath.exists() else {}
     for pid, entries in installed.items():
         entry = entries[0] if isinstance(entries, list) and entries else {}
-        install = Path(entry.get("installPath", ""))
+        install_path = entry.get("installPath") or ""
+        install = Path(install_path)
         is_on = bool(enabled.get(pid, False))
         plugins.append({"id": f"plugin:{pid}", "enabled": is_on,
-                        "version": entry.get("version"), "install_path": str(install)})
-        if not is_on or not install.exists():
+                        "version": entry.get("version"),
+                        "install_path": install_path or None})
+        if not is_on or not install_path or not install.exists():
             continue
         skills += _scan_skill_dir(install / "skills", f"plugin:{pid}", overrides)
         agents += _scan_agent_dir(install / "agents", f"plugin:{pid}")
@@ -77,6 +92,8 @@ def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
                             "est_context_tokens": _est(mcp_file.read_text())})
     skills += _scan_skill_dir(data_root / "skills", "user", overrides)
     agents += _scan_agent_dir(data_root / "agents", "user")
+    skills = _dedupe(skills)
+    agents = _dedupe(agents)
 
     # .claude.json sits INSIDE the config dir when CLAUDE_CONFIG_DIR is set,
     # else as ~/.claude.json next to the default ~/.claude
@@ -91,6 +108,7 @@ def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
                             "est_context_tokens": _est(json.dumps(scfg))})
         except (json.JSONDecodeError, OSError):
             pass
+    mcp = _dedupe(mcp)
 
     claude_md = []
     gmd = data_root / "CLAUDE.md"

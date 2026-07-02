@@ -58,6 +58,33 @@ class TestInventory(unittest.TestCase):
             self.assertEqual(dusty["disable_model_invocation"], "true")
             self.assertNotIn("must-never-appear", json.dumps(inv))  # env allowlist holds
 
+    def test_user_skill_shadows_plugin_skill_and_empty_installpath_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            ev = pathlib.Path(d) / "ev"
+            ev.mkdir()
+            make_fake_claude(root)
+            (root / "skills" / "used-skill").mkdir(parents=True)
+            (root / "skills" / "used-skill" / "SKILL.md").write_text(SKILL_MD)
+            ip = json.loads((root / "plugins" / "installed_plugins.json").read_text())
+            ip["plugins"]["ghost@mp"] = [{}]
+            (root / "plugins" / "installed_plugins.json").write_text(json.dumps(ip))
+            s = json.loads((root / "settings.json").read_text())
+            s["enabledPlugins"]["ghost@mp"] = True
+            (root / "settings.json").write_text(json.dumps(s))
+            inv = inventory.build_inventory(root, ev)
+            used = [x for x in inv["skills"] if x["id"] == "skill:used-skill"]
+            self.assertEqual(len(used), 1)
+            self.assertEqual(used[0]["source"], "user")
+
+    def test_malformed_settings_degrades_gracefully(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            root.mkdir(parents=True)
+            (root / "settings.json").write_text("{broken")
+            inv = inventory.build_inventory(root, None)
+            self.assertEqual(inv["plugins"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
