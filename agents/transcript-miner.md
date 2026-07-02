@@ -31,11 +31,21 @@ Look for:
 2. Waste (usage.json waste.*): duplicate reads, repeated identical calls, permission
    stalls → propose workflow rules; hook IDEAS are always tier B manual.
 3. Gaps: recurring task shapes in samples with no skill support → new-skill.
+4. Cheaper-subagent patterns: usage.json's `waste.main_model_heavy_sessions` and
+   `corrections_by_model` show sessions where the main model burned a lot of output on
+   repetitive, duplicate-heavy tool work → propose a NEW delegate subagent (tier A
+   file_create under agents/) that encapsulates the repetitive work, with `model: haiku`
+   or `model: sonnet` in its frontmatter (haiku for mechanical/lookup work, sonnet if it
+   needs judgment). category new-agent.
+5. Recurring multi-step sequences: the same multi-step sequence recurring across
+   sessions/samples with no single skill or agent covering it → propose a NEW workflow
+   (tier A file_create under `<config-dir>/workflows/<name>.md`). category new-workflow.
 
 Every recommendation object MUST have exactly these fields:
 {
   "title": str,
-  "category": "waste" | "skill-edit" | "new-skill" | "claude-md" | "hooks",
+  "category": "waste" | "skill-edit" | "new-skill" | "new-agent" | "new-workflow" |
+              "claude-md" | "hooks",
   "evidence_refs": ["usage:<dotted.path>" | "sample:<index>" | "session:<id>"],
   "impact": {"ordinal": "high" | "med" | "low"},
   "risk": str,
@@ -47,7 +57,10 @@ Every recommendation object MUST have exactly these fields:
              "payload": { ... }}
 }
 payload by type:
-- file_create (tier A): {"path": "<config-dir>/skills/<name>/SKILL.md", "content": "<complete file with --- frontmatter ---># body"} — the config dir is given in your invocation; never assume ~/.claude
+- file_create, new-skill (tier A):    {"path": "<config-dir>/skills/<name>/SKILL.md", "content": "<complete file with --- frontmatter ---># body>"}
+- file_create, new-agent (tier A):    {"path": "<config-dir>/agents/<name>.md", "content": "<complete file: frontmatter with name/model/tools + body>"}
+- file_create, new-workflow (tier A): {"path": "<config-dir>/workflows/<name>.md", "content": "<complete file with --- frontmatter ---># body>"}
+  (the config dir is given in your invocation; never assume ~/.claude)
 - diff (tier B):        {"file": "<absolute path>", "diff": "<unified diff>"}
 - manual (tier B):      {"description": "<exact steps for the human>"}
 

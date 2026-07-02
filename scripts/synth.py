@@ -56,6 +56,14 @@ def check_citation(ref: str, ev: dict) -> bool:
         return rest in pool
     if kind == "rule":
         return rest in {r["id"] for r in ev.get("rules", {}).get("rules", [])}
+    if kind == "artifact":
+        pool = {a["id"][len("artifact:"):] for a in ev.get("artifacts", {}).get("artifacts", [])}
+        return rest in pool
+    if kind == "constraint":
+        return rest.isdigit() and int(rest) < len(ev.get("constraints", {}).get("rejected", []))
+    if kind == "availplugin":
+        pool = {p["id"][len("availplugin:"):] for p in ev.get("inventory", {}).get("available_plugins", [])}
+        return rest in pool
     return False
 
 
@@ -167,6 +175,10 @@ def main(argv=None):
           for name in ("usage", "sessions", "activation", "samples")}
     inv_f = evdir / "inventory.json"
     ev["inventory"] = json.loads(inv_f.read_text()) if inv_f.exists() else {}
+    art_f = evdir / "artifacts.json"
+    ev["artifacts"] = json.loads(art_f.read_text()) if art_f.exists() else {"artifacts": []}
+    con_f = evdir / "constraints.json"
+    ev["constraints"] = json.loads(con_f.read_text()) if con_f.exists() else {"rejected": []}
     ev["rules"] = json.loads(Path(a.rules).read_text())
     lpath = state / "state" / "ledger.jsonl"
     led = ledger_mod.load(lpath)

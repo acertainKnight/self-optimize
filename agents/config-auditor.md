@@ -26,24 +26,37 @@ Priorities:
    - one skill:     {"file": "settings.json", "key_path": ["skillOverrides", "<skill-name>"], "value": "off"}
      ("name-only" keeps the description discoverable; "user-invocable-only" for /command-style skills)
    - whole plugin:  {"file": "settings.json", "key_path": ["enabledPlugins", "<plugin>@<marketplace>"], "value": false}
-2. MODEL ROUTING: agents whose model is stronger than their job (read-only /
-   search / mechanical work on opus or inherit). Mechanism — user-level SHADOW AGENT
-   (documented precedence: a user-level <config-dir>/agents/<name>.md shadows a plugin agent
-   of the same name; see rule:subagent-model-routing). Emit tier A file_create with
-   payload.path "<config-dir>/agents/<same-name>.md" (config dir given in your invocation) and payload.content = a complete
-   agent file (copy the original's frontmatter + body, change only `model:`).
-   metric: {"key": "model_output_tokens", "direction": "down",
-            "scope": "model:<expensive-model-id-prefix>"}. Name the correction_rate
-   canary in risk.
+2. MODEL ROUTING (both directions):
+   a. DOWNGRADE — agents whose model is stronger than their job (read-only /
+      search / mechanical work on opus or inherit). Mechanism — user-level SHADOW AGENT
+      (documented precedence: a user-level <config-dir>/agents/<name>.md shadows a plugin agent
+      of the same name; see rule:subagent-model-routing). Emit tier A file_create with
+      payload.path "<config-dir>/agents/<same-name>.md" (config dir given in your invocation) and payload.content = a complete
+      agent file (copy the original's frontmatter + body, change only `model:`).
+      metric: {"key": "model_output_tokens", "direction": "down",
+               "scope": "model:<expensive-model-id-prefix>"}. Name the correction_rate
+      canary in risk.
+   b. UPGRADE — usage.json's `corrections_by_model` shows a cheap model (haiku) taking
+      a disproportionate share of corrections relative to its session share. Mechanism —
+      same shadow-agent pattern, changing `model:` to a more capable model (sonnet or
+      opus). metric: {"key": "correction_rate", "direction": "down", "scope": "global"}.
+      Cite the `usage:corrections_by_model.<model>` evidence ref and the model's share
+      of total corrections in risk.
 3. CLAUDE.md hygiene: files in inventory.claude_md above ~800 est_tokens → tier B diff
    moving conditional content into skills (cite rule:claude-md-hygiene).
 4. Settings: cite rules with status "verified" as firm; rules with status "unverified"
    may only produce "worth confirming" phrasing, never a firm recommendation.
    Hooks and permission changes are ALWAYS tier B manual — no exceptions.
+5. NEW PLUGIN: when inventory.available_plugins contains an entry whose description
+   plausibly fills a gap you can see in inventory.unused/rare or in the settings
+   surface, propose it as tier B manual: {"description": "/plugin install <name>@<marketplace> — <why, citing the gap>"}.
+   category "new-plugin". evidence_refs must include the `availplugin:<name@mp>` ref
+   plus the `inventory:` ref for the gap it fills. Never claim compatibility you cannot
+   verify from the description alone — phrase it as "worth evaluating," not a firm fix.
 
 Required fields per recommendation (identical to the shared schema):
-title, category ("bloat" | "model-routing" | "claude-md" | "settings" | "permissions" | "hooks"),
-evidence_refs (["inventory:<item_id>" | "activation:<item_id>" | "usage:<dotted.path>" | "rule:<rule_id>"]),
+title, category ("bloat" | "model-routing" | "new-plugin" | "claude-md" | "settings" | "permissions" | "hooks"),
+evidence_refs (["inventory:<item_id>" | "activation:<item_id>" | "usage:<dotted.path>" | "rule:<rule_id>" | "availplugin:<name@mp>"]),
 impact {"ordinal": ...}, risk, metric {key, direction, scope},
 action {harness: "claude-code", tier, type, payload}.
 For bloat recs use metric {"key": "base_context_est", "direction": "down", "scope": "global"}.

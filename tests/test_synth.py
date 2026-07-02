@@ -103,6 +103,21 @@ class TestSynth(unittest.TestCase):
         findings, dropped = synth.synthesize([rec], EV, {}, DATA, extra_roots=["/mem/notes"])
         self.assertEqual(len(findings), 1)
 
+    def test_check_citation_new_kinds(self):
+        ev = dict(EV)
+        ev["inventory"] = dict(EV["inventory"], available_plugins=[
+            {"id": "availplugin:foo@mp", "name": "foo", "marketplace": "mp", "description": "d"}])
+        ev["artifacts"] = {"artifacts": [{"id": "artifact:skill:tdd", "kind": "skill",
+                                          "source": "user", "path": "/x/SKILL.md",
+                                          "activation_count": 5, "body": "..."}]}
+        ev["constraints"] = {"rejected": [{"title": "x", "reason": "y", "ts": "2026-06-01"}]}
+        self.assertTrue(synth.check_citation("artifact:skill:tdd", ev))
+        self.assertFalse(synth.check_citation("artifact:skill:ghost", ev))
+        self.assertTrue(synth.check_citation("constraint:0", ev))
+        self.assertFalse(synth.check_citation("constraint:5", ev))
+        self.assertTrue(synth.check_citation("availplugin:foo@mp", ev))
+        self.assertFalse(synth.check_citation("availplugin:bar@mp", ev))
+
     def test_fenced_output_parses(self):
         import json, tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
