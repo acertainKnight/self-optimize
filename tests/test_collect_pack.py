@@ -106,6 +106,15 @@ class TestPack(unittest.TestCase):
         out = collect.scale_caps_to_budget(dict(CAPS), 10000)
         self.assertEqual(out["total_tokens"], 2000)
         self.assertEqual(out["excerpts"], 1)
+        # tokens_per_excerpt shrinks by the same factor, so one excerpt can
+        # never blow the scaled total and silently yield zero samples
+        self.assertEqual(out["tokens_per_excerpt"], 50)
+        self.assertLessEqual(out["tokens_per_excerpt"], out["total_tokens"])
+
+    def test_scaled_caps_still_yield_a_sample(self):
+        caps = collect.scale_caps_to_budget(dict(CAPS), 10000)
+        pack = collect.collect_corpus(self.root, None, ["*"], [], collect.DEFAULT_CORRECTION_RE, caps)
+        self.assertGreaterEqual(len(pack["samples"]), 1)
 
     def test_scale_caps_to_budget_no_cap_when_absent_or_generous(self):
         self.assertEqual(collect.scale_caps_to_budget(dict(CAPS), 0), CAPS)

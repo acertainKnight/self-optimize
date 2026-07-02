@@ -6,6 +6,7 @@ their tokens; use parentUuid threading (not file order) for correction adjacency
 import hashlib
 import json
 import re
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -258,13 +259,14 @@ def scale_caps_to_budget(caps: dict, budget: int | None, reserve: int = 8000, fl
     allowed = max(0, budget - reserve)
     if allowed < floor:
         print(f"refusing: --max-budget {budget} leaves only {allowed} tokens for sampling "
-              f"(minimum {floor}) — raise the budget or omit --max-budget")
+              f"(minimum {floor}) — raise the budget or omit --max-budget", file=sys.stderr)
         raise SystemExit(2)
     if allowed >= caps["total_tokens"]:
         return caps
     scale = allowed / caps["total_tokens"]
     out = dict(caps)
     out["excerpts"] = max(1, round(caps["excerpts"] * scale))
+    out["tokens_per_excerpt"] = max(1, round(caps["tokens_per_excerpt"] * scale))
     out["total_tokens"] = allowed
     return out
 
