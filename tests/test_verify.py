@@ -36,20 +36,39 @@ class TestVerify(unittest.TestCase):
         e2 = entry(2.0); e2["rec"]["metric"] = {"key": "none"}
         self.assertEqual(verify.verify_entries({"a": e2}, sessions([0, 0, 0]), None, CFG), [])
 
-    def test_inventory_point_metric_bypasses_session_floor(self):
-        e = entry(88911.0)
-        e["rec"]["metric"] = {"key": "base_context_est", "direction": "down", "scope": "global"}
-        inventory = {"base_context_est": 40989, "unused": []}
-        rows = verify.verify_entries({"a": e}, sessions([0]), inventory, CFG)
-        self.assertEqual(rows[0]["verdict"], "verified")   # n=1, but floor is exempt
-        self.assertIsNone(rows[0]["p_value"])               # point measurement, no distribution
-        self.assertAlmostEqual(rows[0]["rel_change"], -0.539, places=3)
+    def test_snapshot_metric_verdict_comes_from_setting_still_in_effect(self):
+        # the global number moving (up OR down) proves nothing about this rec —
+        # any other config change moves it too. Verdict = is the setting still set.
+        def snap_entry():
+            e = entry(88911.0)
+            e["rec"]["metric"] = {"key": "base_context_est", "direction": "down",
+                                  "scope": "global"}
+            e["rec"]["action"] = {"type": "setting_change", "payload": {
+                "file": "settings.json",
+                "key_path": ["skillOverrides", "d"], "value": "off"}}
+            return e
+        inventory = {"base_context_est": 150000, "unused": []}  # grew since apply
 
-        e2 = entry(88911.0)
-        e2["rec"]["metric"] = {"key": "base_context_est", "direction": "down", "scope": "global"}
-        inventory_no_move = {"base_context_est": 88911, "unused": []}
-        rows = verify.verify_entries({"a": e2}, sessions([0]), inventory_no_move, CFG)
-        self.assertEqual(rows[0]["verdict"], "inconclusive")   # no movement beyond threshold
+        rows = verify.verify_entries({"a": snap_entry()}, sessions([0]), inventory, CFG,
+                                     settings={"skillOverrides": {"d": "off"}})
+        self.assertEqual(rows[0]["verdict"], "verified")   # still in effect despite growth
+        self.assertIsNone(rows[0]["rel_change"])           # snapshot delta is context only
+        self.assertIsNone(rows[0]["p_value"])
+
+        rows = verify.verify_entries({"a": snap_entry()}, sessions([0]), inventory, CFG,
+                                     settings={"skillOverrides": {}})
+        self.assertEqual(rows[0]["verdict"], "regressed")  # setting was reverted
+
+        rows = verify.verify_entries({"a": snap_entry()}, sessions([0]), inventory, CFG,
+                                     settings=None)
+        self.assertEqual(rows[0]["verdict"], "inconclusive")   # cannot check
+
+        no_action = entry(88911.0)
+        no_action["rec"]["metric"] = {"key": "base_context_est", "direction": "down",
+                                      "scope": "global"}
+        rows = verify.verify_entries({"a": no_action}, sessions([0]), inventory, CFG,
+                                     settings={"skillOverrides": {"d": "off"}})
+        self.assertEqual(rows[0]["verdict"], "inconclusive")   # nothing checkable
 
     def test_missing_inventory_does_not_false_verify(self):
         # no evidence/inventory.json this run (inventory=None) must not read as

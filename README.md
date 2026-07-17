@@ -10,13 +10,13 @@ Personal-first and private. See SECURITY.md for the threat model before running.
 
 ## Install
 
-    /plugin marketplace add /Users/nick/Documents/python/self-optimize     (or the private GitHub URL)
+    /plugin marketplace add https://github.com/acertainKnight/self-optimize     (or a local clone path)
     /plugin install self-optimize@self-optimize
 
 ## Use
 
     /self-optimize --stats-only     # first run: deterministic numbers, zero LLM tokens
-    /self-optimize                  # full run: collect -> verify -> 2 analysts -> report
+    /self-optimize                  # full run: collect -> verify -> 3 analysts -> report
     /self-optimize --max-budget 10000   # cap analyst input tokens; refuses below a 2000-token floor
     /self-optimize apply <id>       # apply a tier-A finding (snapshot + smoke-check)
     /self-optimize reject <id> "reason"   # suppress it, with memory of why
@@ -69,10 +69,15 @@ keeps its own state, evidence, ledger, and reports in `<config-dir>/self-optimiz
 | retain_runs | 10 | evidence dirs kept |
 | verify.min_sessions / min_rel_change | 10 / 0.10 | verification floors |
 
+Session metrics verify against the post-apply session distribution. Snapshot metrics
+(`base_context_est`, `unused_surface_count`) are one global number that any later
+config change moves, so those verify by checking the applied setting is still in
+effect — not by comparing the global number.
+
 ## Cost
 
 `--stats-only` uses zero LLM tokens. A full run's LLM cost is bounded by the sample
-caps (≤ ~60k tokens of analyst input by default) plus two sonnet-class analyst
+caps (≤ ~60k tokens of analyst input by default) plus three sonnet-class analyst
 outputs; the report footer records actual analyst tokens per run.
 
 ## Running it on a schedule
@@ -85,7 +90,7 @@ time and `CLAUDE_CONFIG_DIR` for the instance you want optimized):
 Note: Claude Code's `/schedule` cloud routines are NOT suitable here — they execute
 in the cloud, without access to this machine's transcripts and state. Schedule locally.
 
-It's the same full run described above — collect, verify, two analysts, report —
+It's the same full run described above — collect, verify, three analysts, report —
 so review the report and `apply`/`reject` by hand; nothing auto-applies.
 
 ## What it reads and writes

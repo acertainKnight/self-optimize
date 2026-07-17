@@ -10,6 +10,21 @@ import ledger as ledger_mod
 import metriclib
 
 
+INVENTORY_METRICS = ("base_context_est", "unused_surface_count")
+
+
+def _setting_in_effect(payload: dict, settings: dict | None):
+    """None = cannot determine; True/False = the applied value is/isn't still set."""
+    if settings is None or payload.get("file") != "settings.json":
+        return None
+    node = settings
+    for k in payload.get("key_path") or []:
+        if not isinstance(node, dict) or k not in node:
+            return False
+        node = node[k]
+    return node == payload.get("value")
+
+
 def _welch_p(a: list, b: list):
     """Welch's t-test on two unequal-variance samples; the p-value is a normal
     approximation to the (unknown-df) t-distribution via math.erfc, not an exact
@@ -25,7 +40,8 @@ def _welch_p(a: list, b: list):
     return math.erfc(abs(t) / math.sqrt(2))
 
 
-def verify_entries(entries: dict, sessions: list, inventory, cfg: dict) -> list:
+def verify_entries(entries: dict, sessions: list, inventory, cfg: dict,
+                   settings: dict | None = None) -> list:
     rows = []
     for rid, e in entries.items():
         if e.get("status") != "applied":
@@ -40,8 +56,27 @@ def verify_entries(entries: dict, sessions: list, inventory, cfg: dict) -> list:
                "direction": m.get("direction"),
                "baseline": base, "value": val, "n": n,
                "verdict": "inconclusive", "rel_change": None, "p_value": None}
-        floor_ok = (n >= cfg["verify"]["min_sessions"]
-                    or m.get("key") in ("base_context_est", "unused_surface_count"))
+        if m.get("key") in INVENTORY_METRICS:
+            # A snapshot metric is one global number: any config change made since
+            # the apply moves it, so baseline-vs-now cannot attribute the movement
+            # to this rec. Verdict comes from whether the applied setting still
+            # holds; the snapshot values stay in the row as context only.
+            action = rec.get("action") or {}
+            if action.get("type") == "setting_change":
+                held = _setting_in_effect(action.get("payload") or {}, settings)
+                if held is True:
+                    row["verdict"] = "verified"
+                    row["note"] = "applied setting still in effect"
+                elif held is False:
+                    row["verdict"] = "regressed"
+                    row["note"] = "applied setting no longer in effect"
+                else:
+                    row["note"] = "settings unreadable; snapshot metric cannot attribute"
+            else:
+                row["note"] = "snapshot metric cannot attribute movement to this change"
+            rows.append(row)
+            continue
+        floor_ok = n >= cfg["verify"]["min_sessions"]
         if floor_ok and val is not None and base not in (None, 0):
             rel = (val - base) / abs(base)
             row["rel_change"] = rel
@@ -68,9 +103,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--evidence", required=True)
     ap.add_argument("--state", default=None)
+    ap.add_argument("--data-root", default=None)
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
-    _, state = so_config.resolve(None, a.state)
+    data_root, state = so_config.resolve(a.data_root, a.state)
     cfg = so_config.load_config(state)
     lpath = state / "state" / "ledger.jsonl"
     entries = ledger_mod.load(lpath)
@@ -78,7 +114,11 @@ def main(argv=None):
     sessions = json.loads((ev / "sessions.json").read_text())["sessions"]
     inv_f = ev / "inventory.json"
     inventory = json.loads(inv_f.read_text()) if inv_f.exists() else None
-    rows = verify_entries(entries, sessions, inventory, cfg)
+    try:
+        settings = json.loads((data_root / "settings.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        settings = None
+    rows = verify_entries(entries, sessions, inventory, cfg, settings=settings)
     out_path = Path(a.out)
     out_path.write_text(json.dumps({"rows": rows}, indent=1))
     out_path.chmod(0o600)
