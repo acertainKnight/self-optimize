@@ -90,14 +90,15 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer, cu
     L = [f"# self-optimize report — {run_id}", ""]
     if verify_rows:
         L += ["## Applied changes: outcomes", "",
-              "| id | title | metric | verdict | baseline | now | n |",
-              "|---|---|---|---|---|---|---|"]
+              "| id | title | metric | verdict | baseline | now | n | note |",
+              "|---|---|---|---|---|---|---|---|"]
         for v in verify_rows:
             verdict_cell = f"**{v['verdict']}**"
             if v["verdict"] == "regressed":
                 verdict_cell += f" · rollback: /self-optimize rollback {v['id']}"
             L.append(f"| `{v['id']}` | {_cell(v['title'])} | {_cell(v['metric'])} | {verdict_cell} | "
-                     f"{_num(v.get('baseline'))} | {_num(v.get('value'))} | {v.get('n')} |")
+                     f"{_num(v.get('baseline'))} | {_num(v.get('value'))} | {v.get('n')} | "
+                     f"{_cell(v.get('note') or '')} |")
         L.append("")
     L += [f"## Findings ({len(findings)})", ""]
     if findings:
@@ -197,6 +198,12 @@ def main(argv=None):
     if (evdir / "verify.json").exists():
         verify_rows = json.loads((evdir / "verify.json").read_text())["rows"]
     tokens = _parse_analyst_tokens(a.analyst_tokens)
+    if tokens is None and (evdir / "analyst_tokens.json").exists():
+        try:
+            raw = json.loads((evdir / "analyst_tokens.json").read_text())
+            tokens = {str(k): int(v) for k, v in raw.items()} or None
+        except (json.JSONDecodeError, OSError, TypeError, ValueError):
+            tokens = None
     ledger_entries = ledger_mod.load(state / "state" / "ledger.jsonl")
     cumulative = _cumulative_savings(ledger_entries)
     md = render(a.run_id, fdata["findings"], fdata["dropped"], verify_rows,

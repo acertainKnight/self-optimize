@@ -62,7 +62,10 @@ last bullet below), and stop:
    - `subagent_type: "self-optimize:evolver"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/analysts/evolver/artifacts.json, EV/analysts/evolver/samples.json, EV/analysts/evolver/constraints.json>. Rules file: EV/analysts/evolver/rules.json. Standing constraints — constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
    Save each agent's final output verbatim with the Write tool to `EV/miner.json`,
    `EV/auditor.json`, and (if evolver ran) `EV/evolver.json`, then run `chmod 600` on
-   each file written. Note the total tokens the analysts used if visible.
+   each file written. Write the analysts' token counts (from the completion
+   notifications, summed across retries per analyst) as a JSON object to
+   `EV/analyst_tokens.json` (e.g. `{"miner": 8000, "auditor": 4300}`) — report.py
+   reads it automatically.
 5. **Synthesize:**
    `python3 SCRIPTS/synth.py --evidence EV --data-root DATA_ROOT --state STATE --rules ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json --analyst EV/miner.json --analyst EV/auditor.json [--analyst EV/evolver.json] --out EV/findings.json`
    (include `--analyst EV/evolver.json` only if evolver ran in step 4.)
@@ -79,8 +82,9 @@ last bullet below), and stop:
    retry files as additional `--analyst` args. If citations still drop after the retry,
    proceed — never loop again.
 6. **Report:**
-   `python3 SCRIPTS/report.py --evidence EV --state STATE --run-id RUN_ID [--analyst-tokens miner=<n>,auditor=<m>]`
-   (build the value from the tokens noted in step 4, e.g. `miner=8000,auditor=4300`)
+   `python3 SCRIPTS/report.py --evidence EV --state STATE --run-id RUN_ID`
+   (analyst tokens come from `EV/analyst_tokens.json` written in step 4; the
+   `--analyst-tokens miner=<n>,auditor=<m>` flag still works as an override)
    Show the user: the report path, the outcomes section verdicts if any, and the
    printed top-5 with their `/self-optimize apply <id>` / `reject <id>` hints. Then run
    `python3 SCRIPTS/dashboard.py --evidence EV --state STATE --run-id RUN_ID` and print

@@ -41,6 +41,27 @@ class TestReport(unittest.TestCase):
         self.assertIn("| 2026-06-24 | 50 |", md)
         self.assertIn("analyst tokens: miner=8,000, auditor=4,345 (total 12,345)", md)
 
+    def test_verify_note_rendered_in_outcomes_table(self):
+        rows = [dict(VERIFY[0], note="applied setting still in effect")]
+        md = report.render("2026-07-01", [], DROPPED, rows, [], USAGE, {})
+        self.assertIn("| note |", md)
+        self.assertIn("applied setting still in effect", md)
+
+    def test_analyst_tokens_fallback_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            state, ev = base / "st", base / "ev"
+            ev.mkdir()
+            (ev / "findings.json").write_text(json.dumps({"findings": [], "dropped": DROPPED}))
+            (ev / "usage.json").write_text(json.dumps(USAGE))
+            (ev / "analyst_tokens.json").write_text(json.dumps({"miner": 111, "auditor": 222}))
+            import so_config
+            report.main(["--evidence", str(ev), "--state", str(state), "--run-id", "r1"])
+            cfg = so_config.load_config(state)
+            md = (pathlib.Path(cfg["report_dir"]) / "r1.md").read_text()
+            self.assertIn("miner=111, auditor=222 (total 333)", md)
+
     def test_pipe_in_title_does_not_break_table(self):
         f = dict(FINDINGS[0])
         f["title"] = "before | after"
