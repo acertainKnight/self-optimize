@@ -41,6 +41,17 @@ class TestReport(unittest.TestCase):
         self.assertIn("| 2026-06-24 | 50 |", md)
         self.assertIn("analyst tokens: miner=8,000, auditor=4,345 (total 12,345)", md)
 
+    def test_shadow_and_roi_rendered(self):
+        md = report.render("r", FINDINGS, DROPPED, [], [], USAGE, {},
+                           shadow={"aaa111": {"prevented": 3, "total": 4}},
+                           roi={"saved": 9000, "spent": 12000})
+        self.assertIn("prevented 3/4", md)
+        self.assertIn("est. 9,000 tok/window saved", md)
+        self.assertIn("not yet paying for itself", md)
+        md2 = report.render("r", FINDINGS, DROPPED, [], [], USAGE, {},
+                            roi={"saved": 50000, "spent": 12000})
+        self.assertNotIn("not yet paying", md2)
+
     def test_verify_note_rendered_in_outcomes_table(self):
         rows = [dict(VERIFY[0], note="applied setting still in effect")]
         md = report.render("2026-07-01", [], DROPPED, rows, [], USAGE, {})

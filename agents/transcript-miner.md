@@ -29,7 +29,8 @@ Look for:
    assistant → propose a CLAUDE.md rule (tier B diff), an edit to an existing skill
    (tier B diff), or a NEW skill encoding the preference (tier A file_create).
 2. Waste (usage.json waste.*): duplicate reads, repeated identical calls, permission
-   stalls → propose workflow rules; hook IDEAS are always tier B manual.
+   stalls, reverts-after-edit, re-asks, sessions ended on a correction → propose
+   workflow rules; hook IDEAS are always tier B manual.
 3. Gaps: recurring task shapes in samples with no skill support → new-skill.
 4. Cheaper-subagent patterns: usage.json's `waste.main_model_heavy_sessions` and
    `corrections_by_model` show sessions where the main model burned a lot of output on

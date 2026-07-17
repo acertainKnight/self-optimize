@@ -86,7 +86,8 @@ def _parse_analyst_tokens(raw: str | None) -> dict | None:
     return out or None
 
 
-def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer, cumulative=None) -> str:
+def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
+           cumulative=None, shadow=None, roi=None) -> str:
     L = [f"# self-optimize report — {run_id}", ""]
     if verify_rows:
         L += ["## Applied changes: outcomes", "",
@@ -114,6 +115,11 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer, cu
               f"- risk: {r['risk']}",
               f"- metric: {r['metric']['key']} "
               f"({r['metric'].get('direction', '-')}, {r['metric'].get('scope', 'global')})"]
+        sh = (shadow or {}).get(r["id"])
+        if sh:
+            L.append(f"- shadow eval: rewrite would have prevented "
+                     f"{sh.get('prevented', 0)}/{sh.get('total', 0)} of its "
+                     f"motivating corrections (judged, not measured)")
         if r.get("prior_rejection"):
             L.append(f"- previously rejected: {r['prior_rejection']} — evidence has changed since")
         if r["action"]["tier"] == "A":
@@ -171,7 +177,13 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer, cu
           f"- findings dropped — invalid: {dropped['invalid']}, "
           f"failed citations: {dropped['citations']}, guard: {dropped['guard']}, "
           f"suppressed by ledger: {len(dropped['suppressed'])}",
-          f"- analyst tokens: {_analyst_tokens_line(footer.get('analyst_tokens'))}", ""]
+          f"- analyst tokens: {_analyst_tokens_line(footer.get('analyst_tokens'))}"]
+    if roi:
+        saved, spent = roi.get("saved", 0), roi.get("spent", 0)
+        verdict = "" if saved >= spent else " — not yet paying for itself"
+        L.append(f"- program ROI: est. {saved:,} tok/window saved by currently-verified "
+                 f"changes vs {spent:,} analyst tokens spent all-time{verdict}")
+    L.append("")
     return "\n".join(L) + "\n"
 
 
@@ -217,8 +229,25 @@ def main(argv=None):
             tokens = None
     ledger_entries = ledger_mod.load(state / "state" / "ledger.jsonl")
     cumulative = _cumulative_savings(ledger_entries)
+    shadow = None
+    if (evdir / "shadow.json").exists():
+        try:
+            shadow = json.loads((evdir / "shadow.json").read_text())
+        except (json.JSONDecodeError, OSError):
+            shadow = None
+    saved = sum((e.get("rec") or {}).get("delta_tokens") or 0
+                for e in ledger_entries.values() if e.get("status") == "verified")
+    spent = sum(tokens.values()) if tokens else 0
+    runs_f = state / "state" / "runs.jsonl"
+    if runs_f.exists():
+        for line in runs_f.read_text().splitlines():
+            try:
+                spent += sum((json.loads(line).get("analyst_tokens") or {}).values())
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                continue
     md = render(a.run_id, fdata["findings"], fdata["dropped"], verify_rows,
-                _trend(state), usage, {"analyst_tokens": tokens}, cumulative=cumulative)
+                _trend(state), usage, {"analyst_tokens": tokens}, cumulative=cumulative,
+                shadow=shadow, roi={"saved": saved, "spent": spent})
     rdir = Path(cfg["report_dir"])
     rdir.mkdir(parents=True, exist_ok=True)
     out = rdir / f"{a.run_id}.md"

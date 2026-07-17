@@ -57,6 +57,14 @@ Priorities:
 4. Settings: cite rules with status "verified" as firm; rules with status "unverified"
    may only produce "worth confirming" phrasing, never a firm recommendation.
    Hooks and permission changes are ALWAYS tier B manual — no exceptions.
+4b. VIOLATED PROSE RULES → HOOK: when inventory.guidance contains a rule targeting a
+   behavior whose usage.json waste counter stays high anyway (a "don't re-read files"
+   rule alongside a large duplicate_reads_total), prose has failed — propose promoting
+   it to an enforced hook. Tier B manual, category "hooks": payload.description
+   carries the hook spec (event, matcher, what the command checks) and MUST include
+   this design check: parallel subagents share the parent session id, so per-session
+   hook state false-positives on fresh subagent contexts unless keyed per-agent or
+   allowlisted. Cite both the `inventory:guidance:<path>` and the `usage:waste.<counter>` refs.
 5. PERMISSION STALLS: usage.waste.top_stalled_tools and waste.stall_examples name the
    tools that stalled on permission prompts and a trimmed example each. Propose
    specific `permissions.allow` additions — tier B manual ALWAYS (permissions are

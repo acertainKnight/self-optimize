@@ -85,6 +85,19 @@ last bullet below), and stop:
    `EV/<analyst>-retry.json` (chmod 600) and re-run the same synth command with the
    retry files as additional `--analyst` args. If citations still drop after the retry,
    proceed — never loop again.
+   **Shadow eval (evolver rewrites only):** for each finding in `EV/findings.json`
+   with category "skill-improve" whose action carries a full rewrite or diff, and
+   whose evidence_refs include `sample:` refs: for each such sample, spawn one judge
+   agent (`model: haiku`, general-purpose, no tools needed) with the proposed
+   artifact text (from the finding payload) and that sample's `user_text` +
+   `prior_assistant_text` from EV/samples.json, asking exactly: "If the assistant
+   had been operating under this artifact text, would this correction still have
+   been needed? Answer with JSON {\"prevented\": true|false} only — prevented=true
+   means the rewrite addresses what the user corrected." Tally per finding and Write
+   `EV/shadow.json` as {"<finding-id>": {"prevented": <n>, "total": <m>}, ...},
+   chmod 600. The score renders on the finding in the report — it is judged
+   evidence for the human decision, not an auto-gate. Skip the whole step when no
+   finding qualifies.
 6. **Report:**
    `python3 SCRIPTS/report.py --evidence EV --state STATE --run-id RUN_ID`
    (analyst tokens come from `EV/analyst_tokens.json` written in step 4; the
