@@ -70,6 +70,40 @@ class TestVerify(unittest.TestCase):
                                      settings={"skillOverrides": {"d": "off"}})
         self.assertEqual(rows[0]["verdict"], "inconclusive")   # nothing checkable
 
+    def test_snapshot_verdicts_rechecked_every_run(self):
+        import json, tempfile
+        from datetime import datetime, timedelta, timezone
+        import apply as apply_mod
+        import ledger
+        base = pathlib.Path(tempfile.mkdtemp())
+        state, data, ev = base / "state", base / "claude", base / "ev"
+        for d in (state, data, ev):
+            d.mkdir()
+        (data / "settings.json").write_text(json.dumps({"skillOverrides": {}}))
+        (ev / "sessions.json").write_text(json.dumps({"sessions": []}))
+        (ev / "inventory.json").write_text(json.dumps({"base_context_est": 500, "unused": []}))
+        rec = {"title": "t", "category": "bloat", "evidence_refs": ["x"],
+               "impact": {"ordinal": "low"}, "risk": "low",
+               "metric": {"key": "base_context_est", "direction": "down", "scope": "global"},
+               "action": {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                          "payload": {"file": "settings.json",
+                                      "key_path": ["skillOverrides", "d"], "value": "off"}}}
+        lpath = state / "state" / "ledger.jsonl"
+        ledger.append(lpath, {"id": "r1", "status": "proposed", "rec": rec, "evidence_hash": "e"})
+        apply_mod.cmd_apply(["r1"], state, data, ev)
+        args = ["--evidence", str(ev), "--state", str(state), "--data-root", str(data),
+                "--out", str(ev / "verify.json")]
+        verify.main(args)
+        self.assertEqual(ledger.load(lpath)["r1"]["status"], "verified")
+        n_lines = len(lpath.read_text().splitlines())
+        verify.main(args)   # unchanged verdict: re-checked but no duplicate entry
+        self.assertEqual(len(lpath.read_text().splitlines()), n_lines)
+        self.assertEqual(ledger.load(lpath)["r1"]["status"], "verified")
+        # hand-revert the setting: next run must flip verified -> regressed
+        (data / "settings.json").write_text(json.dumps({"skillOverrides": {}}))
+        verify.main(args)
+        self.assertEqual(ledger.load(lpath)["r1"]["status"], "regressed")
+
     def test_missing_inventory_does_not_false_verify(self):
         # no evidence/inventory.json this run (inventory=None) must not read as
         # "unused surfaces dropped to zero" — that would falsely verify any

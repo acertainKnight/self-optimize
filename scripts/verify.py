@@ -44,10 +44,15 @@ def verify_entries(entries: dict, sessions: list, inventory, cfg: dict,
                    settings: dict | None = None) -> list:
     rows = []
     for rid, e in entries.items():
-        if e.get("status") != "applied":
-            continue
         rec = e.get("rec") or {}
         m = rec.get("metric") or {"key": "none"}
+        # snapshot verdicts are re-checked every run — the still-in-effect test is
+        # a dict walk, and a hand-reverted setting must not stay "verified" forever.
+        # Session-metric verdicts stay terminal.
+        recheck = (m.get("key") in INVENTORY_METRICS
+                   and e.get("status") in ("verified", "regressed"))
+        if e.get("status") != "applied" and not recheck:
+            continue
         if m.get("key") == "none":
             continue
         val, n = metriclib.compute_metric(m, sessions, inventory, after_ts=e.get("applied_at"))
@@ -127,6 +132,8 @@ def main(argv=None):
             # carry forward apply context: ledger.load is last-entry-wins, so the
             # verdict entry must keep files/snapshot or rollback finds nothing
             prior = entries.get(r["id"], {})
+            if prior.get("status") == r["verdict"]:
+                continue  # re-check with unchanged verdict: no duplicate entry
             ledger_mod.append(lpath, {"id": r["id"], "status": r["verdict"],
                                       "measured": {"value": r["value"], "n": r["n"],
                                                    "rel_change": r["rel_change"],
