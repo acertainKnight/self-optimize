@@ -93,6 +93,13 @@ in the cloud, without access to this machine's transcripts and state. Schedule l
 It's the same full run described above — collect, verify, three analysts, report —
 so review the report and `apply`/`reject` by hand; nothing auto-applies.
 
+## Adapters
+
+Claude Code is the primary harness (plugin + runner + apply templates).
+`adapters/codex/` additionally collects evidence from a Codex CLI install —
+sessions from its state DB plus the config.toml/AGENTS.md surface; evidence
+only, no apply automation. See `adapters/codex/README.md` for scope and limits.
+
 ## What it reads and writes
 
 Reads: `<config-dir>/projects/**/*.jsonl` (locally, through a secret scrubber),
