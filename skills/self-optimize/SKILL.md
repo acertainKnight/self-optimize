@@ -38,7 +38,7 @@ last bullet below), and stop:
 
 1. **Collect (deterministic, no LLM):**
    `python3 SCRIPTS/collect.py --data-root DATA_ROOT --state STATE --out EV --run-id RUN_ID` (add `--since <ISO>` if the user passed `--since`, and `--max-budget <N>` if the user passed `--max-budget`; if it exits 2, the budget is too small to sample anything useful — show the refusal message and stop rather than retrying), then
-   `python3 SCRIPTS/inventory.py --data-root DATA_ROOT --state STATE --out EV`.
+   `python3 SCRIPTS/inventory.py --data-root DATA_ROOT --state STATE --out EV --rules ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json`.
    Print both summary lines. If `STATE/config.json` did not exist before this run, tell
    the user it was created with defaults, and summarize what was read (session count,
    window) before continuing.
@@ -54,10 +54,12 @@ last bullet below), and stop:
    evolver ("no artifact activation data yet"). Then launch the surviving analysts in
    parallel with the Agent tool. They are plugin agents restricted to the Read tool and
    carry their own instructions — the invocation prompt is just the file list plus a
-   standing constraints instruction:
-   - `subagent_type: "self-optimize:transcript-miner"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/usage.json, EV/samples.json, EV/sessions.json, EV/constraints.json>. Standing constraints — EV/constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
-   - `subagent_type: "self-optimize:config-auditor"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/inventory.json, EV/activation.json, EV/usage.json, EV/constraints.json>. Rules file: ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json. Standing constraints — EV/constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
-   - `subagent_type: "self-optimize:evolver"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/artifacts.json, EV/samples.json, EV/constraints.json>. Rules file: ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json. Standing constraints — EV/constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
+   standing constraints instruction. Each analyst reads ONLY its own copies under
+   `EV/analysts/<name>/` (written by inventory.py) — never the canonical `EV/*.json`
+   paths, so parallel analysts cannot interfere through shared-path session state:
+   - `subagent_type: "self-optimize:transcript-miner"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/analysts/miner/usage.json, EV/analysts/miner/samples.json, EV/analysts/miner/sessions.json, EV/analysts/miner/constraints.json>. Standing constraints — constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
+   - `subagent_type: "self-optimize:config-auditor"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/analysts/auditor/inventory.json, EV/analysts/auditor/activation.json, EV/analysts/auditor/usage.json, EV/analysts/auditor/constraints.json>. Rules file: EV/analysts/auditor/rules.json. Standing constraints — constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
+   - `subagent_type: "self-optimize:evolver"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/analysts/evolver/artifacts.json, EV/analysts/evolver/samples.json, EV/analysts/evolver/constraints.json>. Rules file: EV/analysts/evolver/rules.json. Standing constraints — constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
    Save each agent's final output verbatim with the Write tool to `EV/miner.json`,
    `EV/auditor.json`, and (if evolver ran) `EV/evolver.json`, then run `chmod 600` on
    each file written. Note the total tokens the analysts used if visible.

@@ -238,6 +238,35 @@ def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
             "base_context_est": base, "unused": unused, "rare": rare}
 
 
+# each analyst reads its own copies: shared canonical paths let one analyst's
+# read poison another's through session-scoped interference (dedupe hooks,
+# permission rules) since parallel subagents share the parent session id
+ANALYST_FILES = {
+    "miner": ["usage.json", "samples.json", "sessions.json", "constraints.json"],
+    "auditor": ["inventory.json", "activation.json", "usage.json", "constraints.json"],
+    "evolver": ["artifacts.json", "samples.json", "constraints.json"],
+}
+
+
+def write_analyst_copies(evidence_dir: Path, rules_path: Path | None = None) -> None:
+    import shutil
+    evidence_dir = Path(evidence_dir)
+    for analyst, names in ANALYST_FILES.items():
+        adir = evidence_dir / "analysts" / analyst
+        adir.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            src = evidence_dir / name
+            if not src.exists():
+                continue
+            dst = adir / name
+            shutil.copyfile(src, dst)
+            dst.chmod(0o600)
+        if rules_path and analyst in ("auditor", "evolver") and Path(rules_path).exists():
+            dst = adir / "rules.json"
+            shutil.copyfile(rules_path, dst)
+            dst.chmod(0o600)
+
+
 def update_last_metrics(state_dir: Path, **fields) -> None:
     p = Path(state_dir) / "state" / "metrics.jsonl"
     if not p.exists():
@@ -257,6 +286,7 @@ def main(argv=None):
     ap.add_argument("--data-root", default=None)
     ap.add_argument("--state", default=None)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--rules", default=None)
     a = ap.parse_args(argv)
     data_root, state = so_config.resolve(a.data_root, a.state)
     inv = build_inventory(data_root, Path(a.out))
@@ -267,6 +297,7 @@ def main(argv=None):
     art_file = Path(a.out) / "artifacts.json"
     art_file.write_text(json.dumps(art, indent=1))
     art_file.chmod(0o600)
+    write_analyst_copies(Path(a.out), Path(a.rules) if a.rules else None)
     update_last_metrics(state, base_context_est=inv["base_context_est"],
                         unused_surface_count=len(inv["unused"]))
     print(f"skills={len(inv['skills'])} agents={len(inv['agents'])} mcp={len(inv['mcp_servers'])} "

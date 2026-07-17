@@ -221,6 +221,30 @@ class TestInventory(unittest.TestCase):
             mode = (ev / "inventory.json").stat().st_mode & 0o777
             self.assertEqual(mode, 0o600)
 
+    def test_analyst_copies_are_per_analyst_and_600(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            ev = pathlib.Path(d) / "ev"
+            ev.mkdir()
+            make_fake_claude(root)
+            (ev / "sessions.json").write_text('{"sessions": []}')
+            (ev / "activation.json").write_text('{"items": {}}')
+            for name in ("usage", "samples", "constraints"):
+                (ev / f"{name}.json").write_text("{}")
+            rules = pathlib.Path(d) / "rules.json"
+            rules.write_text('{"rules": []}')
+            inventory.main(["--data-root", str(root), "--state", str(pathlib.Path(d) / "st"),
+                            "--out", str(ev), "--rules", str(rules)])
+            for analyst, names in inventory.ANALYST_FILES.items():
+                for name in names:
+                    f = ev / "analysts" / analyst / name
+                    self.assertTrue(f.exists(), f"{analyst}/{name} missing")
+                    self.assertEqual(f.stat().st_mode & 0o777, 0o600)
+            self.assertTrue((ev / "analysts" / "auditor" / "rules.json").exists())
+            self.assertTrue((ev / "analysts" / "evolver" / "rules.json").exists())
+            self.assertFalse((ev / "analysts" / "miner" / "rules.json").exists())
+            self.assertFalse((ev / "analysts" / "miner" / "inventory.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
