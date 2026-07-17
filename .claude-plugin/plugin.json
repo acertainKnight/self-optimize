@@ -1,6 +1,6 @@
 {
   "name": "self-optimize",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Recurring optimization loop for Claude Code: mines your transcripts + config, emits evidence-cited recommendations, applies the safe tier with approval, and verifies each applied change on your next sessions.",
   "author": {
     "name": "Nick"
