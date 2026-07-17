@@ -76,7 +76,8 @@ def collect_sessions(codex_home: Path) -> list:
             "cache_read": 0, "cache_write": 0, "sidechain_output_tokens": 0,
             "models": {model: {"input": 0, "output": toks}},
             "corrections_count": 0, "duplicate_reads": 0, "repeated_calls": 0,
-            "permission_stalls": 0, "redactions": 0,
+            "permission_stalls": 0, "revert_events": 0, "reasks": 0,
+            "ended_on_correction": 0, "redactions": 0,
             "rollout_path": r["rollout_path"],
         })
     return sessions
@@ -103,7 +104,10 @@ def build_usage(sessions: list, since_iso: str | None) -> dict:
             "corrections_by_model": {},
             "waste": {"duplicate_reads_total": 0, "repeated_calls_total": 0,
                       "permission_stalls_total": 0, "main_model_heavy_sessions": 0,
-                      "top_duplicate_read_paths": []},
+                      "revert_events_total": 0, "reasks_total": 0,
+                      "ended_on_correction_total": 0,
+                      "top_duplicate_read_paths": [], "top_stalled_tools": [],
+                      "stall_examples": []},
             "corrections": {"total": 0, "rate_per_session": 0.0},
             "parse": {"skipped_lines": 0, "files": len(rows), "redactions": 0,
                       "collector_limits": [

@@ -47,7 +47,14 @@ Priorities:
 4. Settings: cite rules with status "verified" as firm; rules with status "unverified"
    may only produce "worth confirming" phrasing, never a firm recommendation.
    Hooks and permission changes are ALWAYS tier B manual — no exceptions.
-5. NEW PLUGIN: when inventory.available_plugins contains an entry whose description
+5. PERMISSION STALLS: usage.waste.top_stalled_tools and waste.stall_examples name the
+   tools that stalled on permission prompts and a trimmed example each. Propose
+   specific `permissions.allow` additions — tier B manual ALWAYS (permissions are
+   never machine-applied), category "permissions", citing
+   `usage:waste.top_stalled_tools`. Only narrowly-scoped rules for read-only or
+   idempotent commands; never propose blanket tool approval, and say in risk what the
+   rule would newly allow.
+6. NEW PLUGIN: when inventory.available_plugins contains an entry whose description
    plausibly fills a gap you can see in inventory.unused/rare or in the settings
    surface, propose it as tier B manual: {"description": "/plugin install <name>@<marketplace> — <why, citing the gap>"}.
    category "new-plugin". metric: {"key": "none"} — plugin-install suggestions aren't

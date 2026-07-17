@@ -17,6 +17,8 @@ DEFAULT_CORRECTION_RE = re.compile(
     r"instead\b|undo\b|revert\b|stop\b|don'?t\b|i meant\b|wrong\b|why did you)")
 REJECTION_RE = re.compile(
     r"(?i)(user (declined|doesn'?t want)|permission.{0,30}denied|rejected this)")
+REVERT_RE = re.compile(r"git\s+(revert\b|reset\s+--hard|checkout\s+--)")
+EDIT_TOOLS = ("Edit", "Write", "NotebookEdit")
 
 
 def iter_records(path: Path, counters: dict):
@@ -61,9 +63,14 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
          "input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_write": 0,
          "sidechain_output_tokens": 0, "models": {}, "corrections": [],
          "duplicate_reads": 0, "repeated_calls": 0, "permission_stalls": 0,
-         "redactions": 0, "activation": Counter()}
+         "revert_events": 0, "reasks": 0, "ended_on_correction": 0,
+         "redactions": 0, "activation": Counter(), "_stall_details": []}
     read_paths, call_keys = Counter(), Counter()
     texts_by_uuid = {}  # uuid -> (role, text sample) for parentUuid adjacency
+    tool_ids = {}       # tool_use id -> (name, trimmed detail) for stall attribution
+    user_texts = []     # real user asks this session, for re-ask detection
+    edits_seen = False
+    last_user_was_correction = False
 
     for rec in iter_records(path, counters):
         rtype = rec.get("type")
@@ -106,6 +113,13 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
                     continue
                 name, inp = blk.get("name", ""), blk.get("input") or {}
                 call_keys[(name, _args_hash(inp))] += 1
+                detail = str(inp.get("command") or inp.get("file_path") or "")[:80]
+                if blk.get("id"):
+                    tool_ids[blk["id"]] = (name, detail)
+                if name in EDIT_TOOLS:
+                    edits_seen = True
+                if name == "Bash" and edits_seen and REVERT_RE.search(str(inp.get("command", ""))):
+                    s["revert_events"] += 1
                 if name == "Read" and inp.get("file_path"):
                     read_paths[inp["file_path"]] += 1
                 if name == "Skill" and inp.get("skill"):
@@ -122,10 +136,19 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
             if rec.get("toolUseResult") is not None:
                 if REJECTION_RE.search(str(rec["toolUseResult"])):
                     s["permission_stalls"] += 1
+                    tid = next((b.get("tool_use_id") for b in
+                                (msg.get("content") or []) if isinstance(b, dict)
+                                and b.get("type") == "tool_result"), None)
+                    name, detail = tool_ids.get(tid, ("unknown", ""))
+                    s["_stall_details"].append({"tool": name,
+                                                "detail": redact.scrub(detail)[0]})
                 continue
             if side or rec.get("isMeta"):
                 continue
             text = _text(msg)
+            if text:
+                user_texts.append(text[:400])
+                last_user_was_correction = bool(correction_re.search(text[:200]))
             if text and correction_re.search(text[:200]):
                 prior, prior_model = "", None
                 parent = rec.get("parentUuid")
@@ -151,6 +174,17 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
     s["duplicate_reads"] = sum(c - 1 for c in read_paths.values() if c > 1)
     s["_dup_read_paths"] = {k: c for k, c in read_paths.items() if c > 1}
     s["repeated_calls"] = sum(c - 2 for c in call_keys.values() if c > 2)
+    # ponytail: O(n²) similarity over user asks; sessions have tens of asks, and
+    # a sequence-hash prefilter is the upgrade path if that ever stops holding
+    import difflib
+    for j, tj in enumerate(user_texts):
+        if len(tj) < 20:
+            continue
+        if any(len(ti) >= 20
+               and difflib.SequenceMatcher(None, ti, tj).ratio() > 0.85
+               for ti in user_texts[:j]):
+            s["reasks"] += 1
+    s["ended_on_correction"] = int(last_user_was_correction)
     s["activation"] = dict(s["activation"])
     return s
 
@@ -166,6 +200,7 @@ import schema as so_schema
 def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, caps) -> dict:
     counters = {"skipped_lines": 0, "files": 0}
     sessions, act, samples, dup_paths, corr_by_model = [], {}, [], {}, {}
+    stall_tools, stall_examples = Counter(), []
     proj_root = Path(data_root) / "projects"
     for f in sorted(proj_root.glob("*/*.jsonl")) if proj_root.exists() else []:
         project = f.parent.name
@@ -185,6 +220,10 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
                 e["projects"].append(project)
         for k, c in s.pop("_dup_read_paths", {}).items():
             dup_paths[k] = dup_paths.get(k, 0) + c
+        for d in s.pop("_stall_details", []):
+            stall_tools[d["tool"]] += 1
+            if len(stall_examples) < 8:
+                stall_examples.append(d)
         corrs = s.pop("corrections")
         for c in corrs:
             samples.append({"session": s["id"], "project": project, "ts": c["ts"],
@@ -202,7 +241,8 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
     tot = {"sessions": n, "turns": 0, "input_tokens": 0, "output_tokens": 0,
            "cache_read": 0, "cache_write": 0}
     waste = {"duplicate_reads_total": 0, "repeated_calls_total": 0, "permission_stalls_total": 0,
-             "main_model_heavy_sessions": 0}
+             "main_model_heavy_sessions": 0, "revert_events_total": 0, "reasks_total": 0,
+             "ended_on_correction_total": 0}
     corr_total = 0
     for s in sessions:
         for k in ("turns", "input_tokens", "output_tokens", "cache_read", "cache_write"):
@@ -221,12 +261,17 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
         waste["duplicate_reads_total"] += s["duplicate_reads"]
         waste["repeated_calls_total"] += s["repeated_calls"]
         waste["permission_stalls_total"] += s["permission_stalls"]
+        waste["revert_events_total"] += s["revert_events"]
+        waste["reasks_total"] += s["reasks"]
+        waste["ended_on_correction_total"] += s["ended_on_correction"]
         corr_total += s["corrections_count"]
     usage = {"window": {"since": since_iso, "until": max((s["ended_at"] or "" for s in sessions), default=None)},
              "totals": tot, "per_project": per_project, "per_model": per_model,
              "corrections_by_model": corr_by_model,
              "waste": {**waste, "top_duplicate_read_paths":
-                       sorted(dup_paths.items(), key=lambda kv: -kv[1])[:10]},
+                       sorted(dup_paths.items(), key=lambda kv: -kv[1])[:10],
+                       "top_stalled_tools": stall_tools.most_common(10),
+                       "stall_examples": stall_examples},
              "corrections": {"total": corr_total,
                              "rate_per_session": (corr_total / n) if n else 0.0},
              "parse": {**counters, "redactions": sum(s.get("redactions", 0) for s in sessions)}}
