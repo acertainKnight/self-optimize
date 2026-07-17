@@ -57,6 +57,11 @@ The config dir is resolved per running instance: `$CLAUDE_CONFIG_DIR` if set, el
 are fully independent: install and run `/self-optimize` inside each; every instance
 keeps its own state, evidence, ledger, and reports in `<config-dir>/self-optimize/`.
 
+Exception: if a second config dir symlinks `projects/` and `self-optimize/` back to
+the first (agent-home-style unification), that is ONE corpus and ONE ledger — run
+the loop once, from either instance; running it "per instance" would just repeat
+the same run against the same data.
+
 ## Config (`<config-dir>/self-optimize/config.json`, auto-created)
 
 | key | default | meaning |
@@ -95,10 +100,15 @@ so review the report and `apply`/`reject` by hand; nothing auto-applies.
 
 ## Adapters
 
-Claude Code is the primary harness (plugin + runner + apply templates).
+Claude Code is the primary harness (plugin + runner + apply templates). Claude
+Code sessions launched from the desktop app land in the same
+`<config-dir>/projects/` store, so they are covered automatically.
 `adapters/codex/` additionally collects evidence from a Codex CLI install —
 sessions from its state DB plus the config.toml/AGENTS.md surface; evidence
-only, no apply automation. See `adapters/codex/README.md` for scope and limits.
+only, no apply automation (see `adapters/codex/README.md`).
+`adapters/claude_chat/` ingests the official claude.ai data export
+(`conversations.json`) to mine chat corrections from the web/desktop chat apps,
+whose conversations are cloud-side and have no local transcript store.
 
 ## What it reads and writes
 
