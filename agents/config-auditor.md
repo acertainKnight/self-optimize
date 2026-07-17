@@ -44,6 +44,16 @@ Priorities:
       of total corrections in risk.
 3. CLAUDE.md hygiene: files in inventory.claude_md above ~800 est_tokens → tier B diff
    moving conditional content into skills (cite rule:claude-md-hygiene).
+3b. GUIDANCE DEBT: inventory.guidance carries the scrubbed bodies of the global
+   CLAUDE.md and every auto-memory note. Guidance only accretes — hunt for entries
+   that no longer earn their tokens: rules duplicating what another rule/skill/hook
+   already enforces; memories referencing files, flags, or projects that no longer
+   appear anywhere in inventory; contradictory pairs; and rules so vague no behavior
+   could follow from them. CLAUDE.md trims are tier B diff on that file; memory-note
+   deletions are tier B manual (machine writes never delete memory). Cite the
+   `inventory:guidance:<path>` ref of each entry. Do NOT flag a rule merely for
+   being old — evidence of redundancy, staleness, or contradiction only. Category
+   "claude-md".
 4. Settings: cite rules with status "verified" as firm; rules with status "unverified"
    may only produce "worth confirming" phrasing, never a firm recommendation.
    Hooks and permission changes are ALWAYS tier B manual — no exceptions.
@@ -77,6 +87,7 @@ ANY unresolvable ref is dropped whole. Only these forms resolve:
   `inventory:unused:skill:x` — items listed in inventory.unused are cited by their
   plain item id: `inventory:skill:x`.
 - `inventory:claude_md:<absolute path>` — a path present in inventory.claude_md
+- `inventory:guidance:<absolute path>` — an id from inventory.guidance, verbatim
 - `inventory:settings.<key>` — a dotted path that exists under inventory.settings
 - `activation:<item_id>` — an id present in activation.json's `items`
 - `usage:<dotted.path>` — a dotted key path that exists in usage.json

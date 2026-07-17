@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
+import redact
 import schema as so_schema
 
 SETTINGS_ALLOWLIST = ["model", "outputStyle", "effortLevel", "autoMemoryDirectory"]
@@ -145,6 +146,36 @@ def _scan_hooks(settings: dict, enabled: dict, installed: dict) -> list:
     return out
 
 
+def _scan_guidance(data_root: Path, settings: dict) -> list:
+    """The guidance surface (global CLAUDE.md + auto-memory notes) with
+    redaction-scrubbed bodies, so the auditor can find rules and memories that
+    no longer earn their tokens. Bodies are capped and scrubbed — memory notes
+    can quote anything the user ever asked to remember."""
+    from datetime import datetime, timezone
+    out = []
+
+    def add(path: Path, kind: str, cap: int):
+        try:
+            text = path.read_text(errors="replace")[:cap]
+            mtime = path.stat().st_mtime
+        except OSError:
+            return
+        out.append({"id": f"guidance:{path}", "path": str(path), "kind": kind,
+                    "bytes": path.stat().st_size, "est_tokens": path.stat().st_size // 4,
+                    "mtime": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                    "body": redact.scrub(text)[0]})
+
+    gmd = data_root / "CLAUDE.md"
+    if gmd.exists():
+        add(gmd, "claude_md", 8000)
+    mem_dir = Path(settings.get("autoMemoryDirectory")
+                   or data_root / "auto-memory").expanduser()
+    if mem_dir.is_dir():
+        for md in sorted(mem_dir.glob("*.md")):
+            add(md, "memory", 2000)
+    return out
+
+
 def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
     data_root = Path(data_root)
     settings = {}
@@ -230,9 +261,11 @@ def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
 
     perms = settings.get("permissions", {}) or {}
     hooks = _scan_hooks(settings, enabled, installed)
+    guidance = _scan_guidance(data_root, settings)
     return {"schema_version": so_schema.EVIDENCE_VERSION, "harness": so_schema.HARNESS,
             "plugins": plugins, "skills": skills, "agents": agents, "mcp_servers": mcp,
-            "claude_md": claude_md, "hooks": hooks, "available_plugins": available_plugins,
+            "claude_md": claude_md, "hooks": hooks, "guidance": guidance,
+            "available_plugins": available_plugins,
             "settings": {**{k: settings.get(k) for k in SETTINGS_ALLOWLIST},
                          "permissions_default_mode": perms.get("defaultMode")},
             "base_context_est": base, "unused": unused, "rare": rare}

@@ -221,6 +221,22 @@ class TestInventory(unittest.TestCase):
             mode = (ev / "inventory.json").stat().st_mode & 0o777
             self.assertEqual(mode, 0o600)
 
+    def test_guidance_surface_scrubbed_and_listed(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "claude"
+            make_fake_claude(root)
+            (root / "CLAUDE.md").write_text("## Rules\n- be terse\n")
+            mem = root / "auto-memory"
+            mem.mkdir()
+            (mem / "old-note.md").write_text(
+                "api key sk-ant-api03-" + "a" * 90 + " stays secret\n")
+            inv = inventory.build_inventory(root, None)
+            kinds = {g["kind"] for g in inv["guidance"]}
+            self.assertEqual(kinds, {"claude_md", "memory"})
+            mem_entry = next(g for g in inv["guidance"] if g["kind"] == "memory")
+            self.assertNotIn("sk-ant-api03", mem_entry["body"])
+            self.assertTrue(mem_entry["id"].startswith("guidance:"))
+
     def test_analyst_copies_are_per_analyst_and_600(self):
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d) / "claude"

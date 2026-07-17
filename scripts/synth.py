@@ -50,7 +50,8 @@ def check_citation(ref: str, ev: dict) -> bool:
         return any(s["id"] == rest for s in ev["sessions"]["sessions"])
     if kind == "inventory":
         inv = ev.get("inventory", {})
-        pool = {i["id"] for g in ("skills", "agents", "mcp_servers", "plugins", "hooks")
+        pool = {i["id"] for g in ("skills", "agents", "mcp_servers", "plugins",
+                                  "hooks", "guidance")
                 for i in inv.get(g, [])}
         pool |= {f"claude_md:{c['path']}" for c in inv.get("claude_md", [])}
         if rest.startswith("settings."):
