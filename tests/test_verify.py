@@ -113,6 +113,18 @@ class TestVerify(unittest.TestCase):
         rows = verify.verify_entries({"a": e}, sessions([0]), None, CFG)
         self.assertEqual(rows[0]["verdict"], "inconclusive")
 
+    def test_shared_session_metric_marks_cohort(self):
+        entries = {"a": entry(2.0), "b": entry(2.0), "c": entry(2.0)}
+        solo = entry(2.0)
+        solo["rec"]["metric"] = {"key": "duplicate_read_rate", "direction": "down",
+                                 "scope": "global"}
+        entries["d"] = solo
+        rows = verify.verify_entries(entries, sessions([0, 0, 0]), None, CFG)
+        by_id = {r["id"]: r for r in rows}
+        self.assertEqual(sorted(by_id["a"]["cohort"]), ["a", "b", "c"])
+        self.assertIn("cohort of 3", by_id["a"]["note"])
+        self.assertNotIn("cohort", by_id["d"])   # sole rec on its metric: no cohort
+
     def test_significant_distributions_verify(self):
         e = entry(10.0)
         e["baseline"]["samples"] = [10.0, 10.0, 10.0, 10.0]

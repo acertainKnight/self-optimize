@@ -100,7 +100,29 @@ def verify_entries(entries: dict, sessions: list, inventory, cfg: dict,
             elif sig_ok and ((want == "down" and rel >= t) or (want == "up" and rel <= -t)):
                 row["verdict"] = "regressed"
         rows.append(row)
+    _mark_cohorts(rows, entries)
     return rows
+
+
+def _mark_cohorts(rows: list, entries: dict) -> None:
+    """N applied recs sharing (metric, scope) all measure the same post-apply
+    sessions, so their identical numbers are one joint measurement — mark them
+    as a cohort rather than implying N independent per-rec verdicts."""
+    groups = {}
+    for row in rows:
+        if row["metric"] in INVENTORY_METRICS:
+            continue
+        rec = (entries.get(row["id"]) or {}).get("rec") or {}
+        scope = (rec.get("metric") or {}).get("scope", "global")
+        groups.setdefault((row["metric"], scope), []).append(row)
+    for grp in groups.values():
+        if len(grp) < 2:
+            continue
+        ids = [r["id"] for r in grp]
+        for r in grp:
+            r["cohort"] = ids
+            r["note"] = (f"cohort of {len(ids)} sharing this metric — "
+                         "one joint measurement, not attributable per-rec")
 
 
 def main(argv=None):
