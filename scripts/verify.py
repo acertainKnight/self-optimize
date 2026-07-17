@@ -25,6 +25,28 @@ def _setting_in_effect(payload: dict, settings: dict | None):
     return node == payload.get("value")
 
 
+COUNT_METRICS = ("correction_rate", "duplicate_read_rate", "permission_stalls")
+
+
+def _binom_two_sided(k: int, n: int, p: float) -> float:
+    """Exact two-sided binomial test: total probability of outcomes no more likely
+    than the observed k under Binomial(n, p). This is the conditional two-sample
+    Poisson rate test (k2 | k1+k2 ~ Binom under equal rates) — far better powered
+    on sparse per-session counts than a t-test on their means. lgamma keeps the
+    pmf finite at the thousands-of-events totals duplicate reads reach."""
+    if n == 0:
+        return 1.0
+    logp, logq = math.log(p), math.log(1.0 - p)
+
+    def log_pmf(i):
+        return (math.lgamma(n + 1) - math.lgamma(i + 1) - math.lgamma(n - i + 1)
+                + i * logp + (n - i) * logq)
+
+    obs = log_pmf(k)
+    return min(1.0, sum(math.exp(lp) for lp in map(log_pmf, range(n + 1))
+                        if lp <= obs + 1e-9))
+
+
 def _welch_p(a: list, b: list):
     """Welch's t-test on two unequal-variance samples; the p-value is a normal
     approximation to the (unknown-df) t-distribution via math.erfc, not an exact
@@ -92,7 +114,13 @@ def verify_entries(entries: dict, sessions: list, inventory, cfg: dict,
                                                     after_ts=e.get("applied_at"))
             sig_ok = True
             if len(base_samples) >= 2 and len(cur_samples) >= 2:
-                p = _welch_p([float(x) for x in base_samples], [float(x) for x in cur_samples])
+                if m["key"] in COUNT_METRICS:
+                    k1, n1 = round(sum(base_samples)), len(base_samples)
+                    k2, n2 = round(sum(cur_samples)), len(cur_samples)
+                    p = _binom_two_sided(k2, k1 + k2, n2 / (n1 + n2))
+                else:
+                    p = _welch_p([float(x) for x in base_samples],
+                                 [float(x) for x in cur_samples])
                 row["p_value"] = p
                 sig_ok = p < 0.05
             if sig_ok and ((want == "down" and rel <= -t) or (want == "up" and rel >= t)):

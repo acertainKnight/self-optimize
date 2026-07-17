@@ -131,6 +131,32 @@ class TestVerify(unittest.TestCase):
         rows = verify.verify_entries({"a": e}, sessions([0, 0, 0, 0]), None,
                                      {"verify": {"min_sessions": 3, "min_rel_change": 0.10}})
         self.assertEqual(rows[0]["verdict"], "verified")
+        self.assertLess(rows[0]["p_value"], 0.05)
+
+    def test_count_metric_uses_exact_binomial(self):
+        # 4 events over 10 baseline sessions -> 0 over 10: K=4, p=0.5; outcomes no
+        # likelier than k=0 are {0,4} -> p = 2 * C(4,0) * 0.5^4 = 0.125. Underpowered
+        # at this size, so the 100% drop is honestly inconclusive.
+        e = entry(0.4)
+        e["baseline"]["samples"] = [1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0]
+        rows = verify.verify_entries({"a": e}, sessions([0] * 10), None, CFG)
+        self.assertAlmostEqual(rows[0]["p_value"], 0.125, places=6)
+        self.assertEqual(rows[0]["verdict"], "inconclusive")
+        # 30 events -> 0 over the same split is decisive
+        e2 = entry(3.0)
+        e2["baseline"]["samples"] = [3.0] * 10
+        rows = verify.verify_entries({"a": e2}, sessions([0] * 10), None, CFG)
+        self.assertLess(rows[0]["p_value"], 0.05)
+        self.assertEqual(rows[0]["verdict"], "verified")
+
+    def test_token_metric_still_uses_welch(self):
+        e = entry(100.0)
+        e["rec"]["metric"] = {"key": "tokens_per_session", "direction": "down",
+                              "scope": "global"}
+        e["baseline"]["samples"] = [100.0, 100.0, 100.0, 100.0]
+        rows = verify.verify_entries({"a": e}, sessions([0, 0, 0, 0]), None, CFG)
+        # Welch's zero-variance short-circuit returns exactly 0.0; the binomial
+        # path never does — this pins the routing
         self.assertEqual(rows[0]["p_value"], 0.0)
 
     def test_noisy_distributions_flip_verdict_to_inconclusive(self):
