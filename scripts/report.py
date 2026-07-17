@@ -137,6 +137,17 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer, cu
                          f"{t.get('base_context_est') if t.get('base_context_est') is not None else '-'} | "
                          f"{t.get('unused_surface_count') if t.get('unused_surface_count') is not None else '-'} |")
             L.append("")
+        cat_rows = [t for t in trend_rows if t.get("corrections_by_category")]
+        if cat_rows:
+            cur = cat_rows[-1]["corrections_by_category"]
+            prev = cat_rows[-2]["corrections_by_category"] if len(cat_rows) > 1 else {}
+            parts = []
+            for k in sorted(set(cur) | set(prev)):
+                p = f"{k} {cur.get(k, 0)}"
+                if prev:
+                    p += f" (prev {prev.get(k, 0)})"
+                parts.append(p)
+            L += ["**Correction categories**: " + ", ".join(parts), ""]
         if cumulative:
             L.append("**Cumulative verified improvement**")
             L.append("")

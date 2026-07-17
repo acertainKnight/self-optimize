@@ -245,6 +245,7 @@ ANALYST_FILES = {
     "miner": ["usage.json", "samples.json", "sessions.json", "constraints.json"],
     "auditor": ["inventory.json", "activation.json", "usage.json", "constraints.json"],
     "evolver": ["artifacts.json", "samples.json", "constraints.json"],
+    "labeler": ["samples.json"],
 }
 
 

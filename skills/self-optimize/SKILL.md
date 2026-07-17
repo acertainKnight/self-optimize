@@ -60,9 +60,13 @@ last bullet below), and stop:
    - `subagent_type: "self-optimize:transcript-miner"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/analysts/miner/usage.json, EV/analysts/miner/samples.json, EV/analysts/miner/sessions.json, EV/analysts/miner/constraints.json>. Standing constraints — constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
    - `subagent_type: "self-optimize:config-auditor"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/analysts/auditor/inventory.json, EV/analysts/auditor/activation.json, EV/analysts/auditor/usage.json, EV/analysts/auditor/constraints.json>. Rules file: EV/analysts/auditor/rules.json. Standing constraints — constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
    - `subagent_type: "self-optimize:evolver"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/analysts/evolver/artifacts.json, EV/analysts/evolver/samples.json, EV/analysts/evolver/constraints.json>. Rules file: EV/analysts/evolver/rules.json. Standing constraints — constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
+   - `subagent_type: "self-optimize:sample-labeler"` (skip when samples are empty), prompt: "Samples file: <absolute path of EV/analysts/labeler/samples.json>. Label every sample. Return the JSON array."
    Save each agent's final output verbatim with the Write tool to `EV/miner.json`,
-   `EV/auditor.json`, and (if evolver ran) `EV/evolver.json`, then run `chmod 600` on
-   each file written. Write the analysts' token counts (from the completion
+   `EV/auditor.json`, (if evolver ran) `EV/evolver.json`, and (if the labeler ran)
+   `EV/labels.json`, then run `chmod 600` on each file written. After saving
+   labels.json, run `python3 SCRIPTS/labels.py --evidence EV --state STATE` and print
+   its summary line (it validates the labels and records per-category correction
+   counts in the metrics trend). Write the analysts' token counts (from the completion
    notifications, summed across retries per analyst) as a JSON object to
    `EV/analyst_tokens.json` (e.g. `{"miner": 8000, "auditor": 4300}`) — report.py
    reads it automatically.
@@ -91,5 +95,6 @@ last bullet below), and stop:
    the `DASHBOARD:` line plus an `open <path>` hint.
 
 Rules for the runner: never read raw transcripts yourself — everything flows through
-the evidence pack; do not exceed the three analyst agents; if any script exits non-zero,
-show the error and stop rather than improvising.
+the evidence pack; do not exceed the four analyst agents (miner, auditor, evolver,
+sample-labeler) plus their citation-retry and shadow-eval judge calls; if any script
+exits non-zero, show the error and stop rather than improvising.
