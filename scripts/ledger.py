@@ -47,7 +47,3 @@ def suppress_reason(rec: dict, entries: dict) -> str | None:
             return f"rejected: {e.get('reason', '')}"
         return None  # evidence changed -> resurface (synth attaches prior_rejection)
     return None  # proposed/approved -> re-propose freely
-
-
-def append_run(path: Path, row: dict) -> None:
-    append(path, row)

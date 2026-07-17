@@ -98,10 +98,10 @@ class TestInventory(unittest.TestCase):
             root = pathlib.Path(d) / "claude"
             make_fake_claude(root)
             s = json.loads((root / "settings.json").read_text())
-            s["autoMemoryDirectory"] = "/Users/nick/.claude/memory"
+            s["autoMemoryDirectory"] = "/Users/someone/.claude/memory"
             (root / "settings.json").write_text(json.dumps(s))
             inv = inventory.build_inventory(root, None)
-            self.assertEqual(inv["settings"]["autoMemoryDirectory"], "/Users/nick/.claude/memory")
+            self.assertEqual(inv["settings"]["autoMemoryDirectory"], "/Users/someone/.claude/memory")
 
     def test_available_plugins_excludes_installed_and_parses_catalog(self):
         with tempfile.TemporaryDirectory() as d:

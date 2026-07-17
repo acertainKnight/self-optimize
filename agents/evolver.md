@@ -61,7 +61,7 @@ Every recommendation object MUST have exactly these fields:
 CITATIONS — every ref is machine-checked against the evidence files and a finding with
 ANY unresolvable ref is dropped whole. Only these forms resolve:
 - `artifact:<id-suffix>` — the part after "artifact:" in an artifacts.json id, verbatim
-  (an id `artifact:skill:tilt-eod` is cited as `artifact:skill:tilt-eod`)
+  (an id `artifact:skill:daily-report` is cited as `artifact:skill:daily-report`)
 - `sample:<index>` — a 0-based index into samples.json's `samples` array
 - `rule:<rule_id>` — an id from rules.json
 - `constraint:<index>` — a 0-based index into constraints.json's `rejected` array

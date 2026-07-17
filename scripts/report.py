@@ -252,7 +252,7 @@ def main(argv=None):
     rdir.mkdir(parents=True, exist_ok=True)
     out = rdir / f"{a.run_id}.md"
     out.write_text(md)
-    ledger_mod.append_run(state / "state" / "runs.jsonl",
+    ledger_mod.append(state / "state" / "runs.jsonl",
                           {"run_id": a.run_id, "n_sessions": usage["totals"]["sessions"],
                            "findings": len(fdata["findings"]),
                            "analyst_tokens": tokens,
