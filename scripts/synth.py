@@ -50,9 +50,11 @@ def check_citation(ref: str, ev: dict) -> bool:
         return any(s["id"] == rest for s in ev["sessions"]["sessions"])
     if kind == "inventory":
         inv = ev.get("inventory", {})
-        pool = {i["id"] for g in ("skills", "agents", "mcp_servers", "plugins")
+        pool = {i["id"] for g in ("skills", "agents", "mcp_servers", "plugins", "hooks")
                 for i in inv.get(g, [])}
         pool |= {f"claude_md:{c['path']}" for c in inv.get("claude_md", [])}
+        if rest.startswith("settings."):
+            return _resolve_path(inv, rest)
         return rest in pool
     if kind == "rule":
         return rest in {r["id"] for r in ev.get("rules", {}).get("rules", [])}
@@ -152,14 +154,19 @@ def tier1_delta(rec: dict, ev: dict):
 
 
 def synthesize(analyst_recs: list, ev: dict, led_entries: dict, data_root: Path, extra_roots=None):
-    dropped = {"invalid": 0, "citations": 0, "guard": 0, "suppressed": []}
+    dropped = {"invalid": 0, "citations": 0, "guard": 0, "suppressed": [],
+               "citation_detail": []}
     seen, findings = set(), []
     for rec in analyst_recs:
+        src = rec.pop("_analyst", None) if isinstance(rec, dict) else None
         if not isinstance(rec, dict) or so_schema.validate_rec(rec):
             dropped["invalid"] += 1
             continue
-        if not all(check_citation(r, ev) for r in rec["evidence_refs"]):
+        failed_refs = [r for r in rec["evidence_refs"] if not check_citation(r, ev)]
+        if failed_refs:
             dropped["citations"] += 1
+            dropped["citation_detail"].append({"analyst": src, "title": rec.get("title", ""),
+                                               "failed_refs": failed_refs})
             continue
         if not guard(rec, data_root, extra_roots):
             dropped["guard"] += 1
@@ -206,7 +213,12 @@ def main(argv=None):
     ev["rules"] = json.loads(Path(a.rules).read_text())
     lpath = state / "state" / "ledger.jsonl"
     led = ledger_mod.load(lpath)
-    recs = [r for f in a.analyst for r in load_analyst_output(f)]
+    recs = []
+    for f in a.analyst:
+        for r in load_analyst_output(f):
+            if isinstance(r, dict):
+                r["_analyst"] = Path(f).stem
+            recs.append(r)
     findings, dropped = synthesize(recs, ev, led, data_root,
                                    so_schema.derive_extra_roots(ev["inventory"], data_root))
     for rec in findings:

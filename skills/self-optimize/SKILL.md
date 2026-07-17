@@ -66,6 +66,18 @@ last bullet below), and stop:
 5. **Synthesize:**
    `python3 SCRIPTS/synth.py --evidence EV --data-root DATA_ROOT --state STATE --rules ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json --analyst EV/miner.json --analyst EV/auditor.json [--analyst EV/evolver.json] --out EV/findings.json`
    (include `--analyst EV/evolver.json` only if evolver ran in step 4.)
+   **Citation retry (at most ONE round):** if the synth summary shows
+   `dropped_citations > 0`, read `EV/findings.json`'s `dropped.citation_detail` — each
+   entry names the analyst, the finding title, and exactly which refs failed. For each
+   affected analyst, message that same agent (do not spawn a new one): include its
+   dropped findings verbatim, the failed refs, and this instruction: "These findings
+   were dropped because the marked evidence_refs do not resolve. Re-read your evidence
+   files' actual ids and fix ONLY the evidence_refs — do not add findings, change
+   payloads, or re-litigate content. If no valid ref exists for a claim, drop that
+   finding. Return the corrected JSON array of just these findings." Save each reply to
+   `EV/<analyst>-retry.json` (chmod 600) and re-run the same synth command with the
+   retry files as additional `--analyst` args. If citations still drop after the retry,
+   proceed — never loop again.
 6. **Report:**
    `python3 SCRIPTS/report.py --evidence EV --state STATE --run-id RUN_ID [--analyst-tokens miner=<n>,auditor=<m>]`
    (build the value from the tokens noted in step 4, e.g. `miner=8000,auditor=4300`)

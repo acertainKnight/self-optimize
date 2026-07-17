@@ -186,6 +186,38 @@ class TestSynth(unittest.TestCase):
         self.assertTrue(synth.check_citation("availplugin:foo@mp", ev))
         self.assertFalse(synth.check_citation("availplugin:bar@mp", ev))
 
+    def test_check_citation_hooks_and_settings(self):
+        ev = dict(EV)
+        ev["inventory"] = dict(EV["inventory"],
+                               hooks=[{"id": "hook:settings", "source": "user",
+                                       "est_context_tokens": 10}],
+                               settings={"model": "opusplan",
+                                         "permissions_default_mode": "auto"})
+        self.assertTrue(synth.check_citation("inventory:hook:settings", ev))
+        self.assertFalse(synth.check_citation("inventory:hook:ghost", ev))
+        self.assertTrue(synth.check_citation("inventory:settings.permissions_default_mode", ev))
+        self.assertFalse(synth.check_citation("inventory:settings.nonexistent", ev))
+        # composed sub-paths must still fail: unused items are cited by plain item id
+        self.assertFalse(synth.check_citation("inventory:unused:skill:dusty", ev))
+
+    def test_citation_drop_detail_names_analyst_and_refs(self):
+        bad = bloat_rec()
+        bad["evidence_refs"] = ["inventory:skill:dusty", "inventory:skill:ghost",
+                                "rule:no-such-rule"]
+        bad["_analyst"] = "auditor"
+        findings, dropped = synth.synthesize([bad], EV, {}, DATA)
+        self.assertEqual(findings, [])
+        self.assertEqual(dropped["citations"], 1)
+        detail = dropped["citation_detail"][0]
+        self.assertEqual(detail["analyst"], "auditor")
+        self.assertEqual(detail["title"], "Disable dusty")
+        self.assertEqual(detail["failed_refs"], ["inventory:skill:ghost", "rule:no-such-rule"])
+
+    def test_analyst_tag_does_not_change_rec_id(self):
+        tagged = bloat_rec(); tagged["_analyst"] = "auditor"
+        findings, _ = synth.synthesize([tagged], EV, {}, DATA)
+        self.assertEqual(findings[0]["id"], schema.rec_id(bloat_rec()))
+
     def test_fenced_output_parses(self):
         import json, tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:

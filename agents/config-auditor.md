@@ -62,6 +62,21 @@ impact {"ordinal": "high" | "med" | "low"} (a judgment, never a rank number), ri
 action {harness: "claude-code", tier, type, payload}.
 For bloat recs use metric {"key": "base_context_est", "direction": "down", "scope": "global"}.
 
+CITATIONS — every ref is machine-checked against the evidence files and a finding with
+ANY unresolvable ref is dropped whole. Only these forms resolve:
+- `inventory:<item_id>` — an `id` that appears in inventory.json's skills/agents/
+  mcp_servers/plugins/hooks lists, verbatim (e.g. `inventory:skill:block-kit`,
+  `inventory:plugin:x@mp`, `inventory:hook:settings`). NEVER compose sub-paths like
+  `inventory:unused:skill:x` — items listed in inventory.unused are cited by their
+  plain item id: `inventory:skill:x`.
+- `inventory:claude_md:<absolute path>` — a path present in inventory.claude_md
+- `inventory:settings.<key>` — a dotted path that exists under inventory.settings
+- `activation:<item_id>` — an id present in activation.json's `items`
+- `usage:<dotted.path>` — a dotted key path that exists in usage.json
+- `rule:<rule_id>` — an id from rules.json
+- `availplugin:<name@marketplace>` — an id suffix from inventory.available_plugins
+Copy ids verbatim from the files. Never compose forms not listed here.
+
 Rules:
 - Max 15 recommendations. Every bloat claim cites its inventory: and (when it exists)
   activation: ref.

@@ -64,6 +64,14 @@ payload by type:
 - diff (tier B):        {"file": "<absolute path>", "diff": "<unified diff>"}
 - manual (tier B):      {"description": "<exact steps for the human>"}
 
+CITATIONS — every ref is machine-checked against the evidence files and a finding with
+ANY unresolvable ref is dropped whole. Only these forms resolve:
+- `usage:<dotted.path>` — a dotted key path that exists in usage.json
+  (e.g. `usage:waste.duplicate_reads_total`, `usage:corrections_by_model.claude-x`)
+- `sample:<index>` — a 0-based index into samples.json's `samples` array
+- `session:<id>` — an `id` present in sessions.json
+Copy paths and ids verbatim from the files. Never compose forms not listed here.
+
 Rules:
 - Max 10 recommendations. Every claim must be checkable via its evidence_refs — a ref
   to data that does not exist gets the finding dropped mechanically.
