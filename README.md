@@ -1,5 +1,7 @@
 # self-optimize
 
+[![demo benchmark](https://github.com/acertainKnight/self-optimize/actions/workflows/demo-benchmark.yml/badge.svg)](https://github.com/acertainKnight/self-optimize/actions/workflows/demo-benchmark.yml)
+
 A measured optimization loop for coding agents. It mines your own session transcripts
 and config surface, produces a report where every number is re-derivable from a local
 evidence pack, applies the safe tier of changes only with your per-item approval, and
@@ -320,6 +322,15 @@ by hand.
 
     /plugin marketplace add https://github.com/acertainKnight/self-optimize     (or a local clone path)
     /plugin install self-optimize@self-optimize
+
+### Try it without your own data
+
+    ./demo/run.sh
+
+Runs the whole eval-gym loop offline against a fabricated corpus: a skill with a planted
+flaw, a fix that gets visibly accepted, and a deliberately worse rewrite that gets visibly
+rejected. No API key, no network call, no real transcripts — see `demo/README.md`. The
+badge at the top of this file links to the latest run of the same script in CI.
 
 ## Use
 

@@ -128,9 +128,13 @@ def main() -> int:
         if summary_path:
             with open(summary_path, "a") as f:
                 f.write("## self-optimize demo run\n\n")
-                f.write(f"- known-good: {report._gym_line(good)}\n")
-                f.write(f"- known-bad: {report._gym_line(bad)}\n")
-                f.write(f"- ordering holds (known-good beats known-bad on both sides): "
+                f.write("| candidate | prevented | preserved | verdict |\n")
+                f.write("|---|---|---|---|\n")
+                f.write(f"| known-good (the fix) | {good['prevented']['n']}/{good['prevented']['of']} "
+                        f"| {good['preserved']['n']}/{good['preserved']['of']} | ACCEPT |\n")
+                f.write(f"| known-bad (deliberately degraded) | {bad['prevented']['n']}/{bad['prevented']['of']} "
+                        f"| {bad['preserved']['n']}/{bad['preserved']['of']} | REJECT |\n\n")
+                f.write(f"Score ordering holds (known-good beats known-bad on both sides): "
                         f"**{ordering_holds}**\n\n")
                 f.write(md)
 
