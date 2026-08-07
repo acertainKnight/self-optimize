@@ -1,0 +1,19 @@
+{
+ "_synthetic": "Fabricated demo working excerpts -- see demo/README.md. No real users or sessions.",
+ "schema_version": "1",
+ "harness": "demo",
+ "samples": [
+  {"session": "demo-w1", "project": "widgetforge-demo", "ts": "2026-01-09T11:00:00Z", "kind": "working",
+   "user_text": "please add a config key for the new retry limit feature",
+   "assistant_text": "Added wf-retry-limit to the config, kebab-case as usual."},
+  {"session": "demo-w2", "project": "widgetforge-demo", "ts": "2026-01-10T11:00:00Z", "kind": "working",
+   "user_text": "what config key would you suggest for enabling debug logging",
+   "assistant_text": "wf-debug-logging fits the kebab-case convention used everywhere else."},
+  {"session": "demo-w3", "project": "widgetforge-demo", "ts": "2026-01-11T11:00:00Z", "kind": "working",
+   "user_text": "generate a key for the batch size setting",
+   "assistant_text": "wf-batch-size, matches the existing kebab-case keys."},
+  {"session": "demo-w4", "project": "widgetforge-demo", "ts": "2026-01-12T11:00:00Z", "kind": "working",
+   "user_text": "give me a name for the new timeout setting",
+   "assistant_text": "wf-timeout-seconds, kebab-case like the others."}
+ ]
+}

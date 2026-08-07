@@ -1,0 +1,16 @@
+{
+ "_synthetic": "Fabricated demo usage totals -- see demo/README.md.",
+ "schema_version": "1",
+ "harness": "demo",
+ "window": {"since": "2026-01-01T00:00:00Z", "until": "2026-01-12T11:00:00Z"},
+ "totals": {"sessions": 8, "turns": 32, "input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_write": 0},
+ "per_project": {"widgetforge-demo": {"sessions": 8, "output_tokens": 0}},
+ "per_model": {},
+ "corrections_by_model": {},
+ "waste": {"duplicate_reads_total": 0, "repeated_calls_total": 0, "permission_stalls_total": 0,
+           "main_model_heavy_sessions": 0, "revert_events_total": 0, "reasks_total": 0,
+           "ended_on_correction_total": 0, "top_duplicate_read_paths": [], "top_stalled_tools": [],
+           "stall_examples": []},
+ "corrections": {"total": 4, "rate_per_session": 0.5},
+ "parse": {"skipped_lines": 0, "files": 8, "redactions": 0}
+}

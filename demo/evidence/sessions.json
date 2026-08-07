@@ -1,0 +1,15 @@
+{
+ "_synthetic": "Fabricated demo sessions -- see demo/README.md. No real projects or transcripts.",
+ "schema_version": "1",
+ "harness": "demo",
+ "sessions": [
+  {"id": "demo-f1", "project": "widgetforge-demo", "corrections_count": 1, "activation": {"skill:widget-namer": 1}},
+  {"id": "demo-f2", "project": "widgetforge-demo", "corrections_count": 1, "activation": {"skill:widget-namer": 1}},
+  {"id": "demo-f3", "project": "widgetforge-demo", "corrections_count": 1, "activation": {"skill:widget-namer": 1}},
+  {"id": "demo-f4", "project": "widgetforge-demo", "corrections_count": 1, "activation": {"skill:widget-namer": 1}},
+  {"id": "demo-w1", "project": "widgetforge-demo", "corrections_count": 0, "activation": {"skill:widget-namer": 1}},
+  {"id": "demo-w2", "project": "widgetforge-demo", "corrections_count": 0, "activation": {"skill:widget-namer": 1}},
+  {"id": "demo-w3", "project": "widgetforge-demo", "corrections_count": 0, "activation": {"skill:widget-namer": 1}},
+  {"id": "demo-w4", "project": "widgetforge-demo", "corrections_count": 0, "activation": {"skill:widget-namer": 1}}
+ ]
+}

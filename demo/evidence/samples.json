@@ -1,0 +1,19 @@
+{
+ "_synthetic": "Fabricated demo corrections -- see demo/README.md. No real users or sessions.",
+ "schema_version": "1",
+ "harness": "demo",
+ "samples": [
+  {"session": "demo-f1", "project": "widgetforge-demo", "ts": "2026-01-05T10:00:00Z", "kind": "correction", "pattern": "no",
+   "user_text": "no, that key needs to be kebab-case, you wrote wf_EnableRetries and it should be wf-enable-retries",
+   "prior_assistant_text": "Added the key wf_EnableRetries to the config."},
+  {"session": "demo-f2", "project": "widgetforge-demo", "ts": "2026-01-06T10:00:00Z", "kind": "correction", "pattern": "not",
+   "user_text": "not that format, config keys are kebab-case here, not snake_case",
+   "prior_assistant_text": "I used wf_max_retry_count for the new key."},
+  {"session": "demo-f3", "project": "widgetforge-demo", "ts": "2026-01-07T10:00:00Z", "kind": "correction", "pattern": "wrong",
+   "user_text": "wrong casing again, this needs to be kebab-case like the rest of the file",
+   "prior_assistant_text": "Set WF_TimeoutSeconds as the key name."},
+  {"session": "demo-f4", "project": "widgetforge-demo", "ts": "2026-01-08T10:00:00Z", "kind": "correction", "pattern": "actually",
+   "user_text": "actually every key in this file is kebab-case, please match that",
+   "prior_assistant_text": "Created wf_batchSize for the setting."}
+ ]
+}
