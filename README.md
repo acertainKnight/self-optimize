@@ -50,6 +50,28 @@ are never run automatically, you do them together with Claude afterward. Each de
 run also logs what happened to `<config-dir>/self-optimize/state/decisions/` (the
 `~/Downloads` file itself is transient).
 
+## Eval gym
+
+Every full run also updates an eval gym under `<config-dir>/self-optimize/gym/`: for
+each optimizable artifact (skill, agent, hook, guidance block) it keeps a corpus of
+graded cases mined from your own sessions — *failure cases*, where the artifact was
+active and you corrected the assistant, and *working cases*, where it was active and
+nothing needed correcting. That corpus is what a proposed rewrite gets checked
+against, instead of taste.
+
+    python3 scripts/gym.py status --state <config-dir>/self-optimize
+
+The registry is derived from the inventory step, never hand-maintained: a new skill on
+disk registers itself on the next run with an empty corpus, and an artifact missing
+from three consecutive runs is retired and dropped from scoring (it un-retires with
+its corpus intact if it comes back). Below the case floor — fewer than 3 cases on
+either side — the gym reports `unscorable` and refuses to emit a number, because a
+score off two cases is noise. Cases deduplicate across overlapping collection windows
+and age out FIFO past the per-artifact cap.
+
+The corpus holds real transcript excerpts (redaction-scrubbed, mode 0600). It lives in
+your state dir and is never committed anywhere.
+
 ## Instances
 
 The config dir is resolved per running instance: `$CLAUDE_CONFIG_DIR` if set, else
@@ -73,6 +95,9 @@ the same run against the same data.
 | max_budget_tokens | 400000 | default `--max-budget` in tokens; sample caps shrink to fit and collect.py refuses (exit 2) runs too small to sample usefully |
 | retain_runs | 10 | evidence dirs kept |
 | verify.min_sessions / min_rel_change | 10 / 0.10 | verification floors |
+| gym.min_cases_per_side | 3 | fewer cases than this on either side and the artifact is reported unscorable |
+| gym.max_cases_per_side | 20 | per-artifact corpus cap; older cases age out FIFO |
+| gym.retire_after_absent_runs | 3 | consecutive runs an artifact can be missing from the inventory before it is retired |
 
 Session metrics verify against the post-apply session distribution. Snapshot metrics
 (`base_context_est`, `unused_surface_count`) are one global number that any later

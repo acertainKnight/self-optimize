@@ -1,0 +1,253 @@
+"""Gym corpus tests. Every pack here is synthetic — the real corpus holds real
+transcript excerpts and never enters this repo."""
+import json, sys, pathlib, shutil, tempfile, unittest
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+import gym
+import so_config
+
+
+def write_pack(ev: pathlib.Path, skills=("alpha",), agents=(), sessions=(), samples=(),
+               working=(), harness="claude-code", guidance=(), hooks=()):
+    ev.mkdir(parents=True, exist_ok=True)
+    inv = {"schema_version": "1", "harness": harness,
+           "skills": [{"id": f"skill:{n}", "name": n, "source": "user",
+                       "path": f"/synthetic/skills/{n}/SKILL.md"} for n in skills],
+           "agents": [{"id": f"agent:{n}", "name": n, "source": "user",
+                       "path": f"/synthetic/agents/{n}.md"} for n in agents],
+           "hooks": [{"id": h, "source": "user", "est_context_tokens": 10} for h in hooks],
+           "guidance": [{"id": f"guidance:{p}", "path": p, "kind": "memory",
+                         "bytes": 10, "est_tokens": 2, "mtime": "", "body": "b"}
+                        for p in guidance]}
+    (ev / "inventory.json").write_text(json.dumps(inv))
+    (ev / "sessions.json").write_text(json.dumps(
+        {"schema_version": "1", "harness": harness, "sessions": list(sessions)}))
+    (ev / "samples.json").write_text(json.dumps(
+        {"schema_version": "1", "harness": harness, "samples": list(samples)}))
+    (ev / "working.json").write_text(json.dumps(
+        {"schema_version": "1", "harness": harness, "samples": list(working)}))
+    return ev
+
+
+def session(sid, artifacts, corrections=0, project="p"):
+    return {"id": sid, "project": project, "corrections_count": corrections,
+            "activation": {a: 1 for a in artifacts}}
+
+
+def correction(sid, i, project="p"):
+    return {"session": sid, "project": project, "ts": f"2026-06-{i:02d}T10:00:00Z",
+            "kind": "correction", "pattern": "no",
+            "user_text": f"no, not like that ({i})", "prior_assistant_text": f"did it wrong {i}"}
+
+
+def working_row(sid, i, project="p"):
+    return {"session": sid, "project": project, "ts": f"2026-06-{i:02d}T11:00:00Z",
+            "kind": "working", "user_text": f"please do the thing ({i})",
+            "assistant_text": f"done, here it is {i}"}
+
+
+class GymCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.state = self.tmp / "state"
+        self.cfg = so_config.load_config(self.state)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def status_by_id(self):
+        return {r["id"]: r for r in gym.artifact_status(self.state, self.cfg)}
+
+
+class TestRegistry(GymCase):
+    def test_registry_is_derived_from_inventory_each_run(self):
+        ev = write_pack(self.tmp / "ev1", skills=("alpha",), agents=("helper",),
+                        hooks=("hook:settings",), guidance=("/synthetic/CLAUDE.md",))
+        gym.accrue(self.state, [ev], "2026-06-01", self.cfg)
+        rows = self.status_by_id()
+        self.assertEqual(set(rows), {"skill:alpha", "agent:helper", "hook:settings",
+                                     "guidance:/synthetic/CLAUDE.md"})
+        self.assertEqual(rows["skill:alpha"]["failure_cases"], 0)
+        self.assertFalse(rows["skill:alpha"]["scorable"])
+
+        # a new skill on disk registers on the next run with an empty corpus
+        ev2 = write_pack(self.tmp / "ev2", skills=("alpha", "beta"), agents=("helper",))
+        summary = gym.accrue(self.state, [ev2], "2026-06-02", self.cfg)
+        self.assertIn("skill:beta", summary["new"])
+        self.assertEqual(self.status_by_id()["skill:beta"]["working_cases"], 0)
+
+    def test_absent_artifact_retires_after_the_configured_window(self):
+        ev = write_pack(self.tmp / "ev1", skills=("alpha", "doomed"))
+        gym.accrue(self.state, [ev], "2026-06-01", self.cfg)
+        gone = write_pack(self.tmp / "ev2", skills=("alpha",))
+        for i, run in enumerate(("2026-06-02", "2026-06-03"), start=1):
+            gym.accrue(self.state, [gone], run, self.cfg)
+            row = self.status_by_id()["skill:doomed"]
+            self.assertFalse(row["retired"], f"retired too early after {i} absences")
+        gym.accrue(self.state, [gone], "2026-06-04", self.cfg)
+        row = self.status_by_id()["skill:doomed"]
+        self.assertTrue(row["retired"])
+        self.assertFalse(row["scorable"])
+        self.assertIn("retired", row["reason"])
+
+    def test_absence_counts_once_per_run_id(self):
+        gym.accrue(self.state, [write_pack(self.tmp / "ev1", skills=("alpha", "doomed"))],
+                   "2026-06-01", self.cfg)
+        gone = write_pack(self.tmp / "ev2", skills=("alpha",))
+        for _ in range(5):
+            gym.accrue(self.state, [gone], "2026-06-02", self.cfg)
+        self.assertEqual(self.status_by_id()["skill:doomed"]["absent_runs"], 1)
+
+    def test_retired_artifact_returns_with_its_corpus(self):
+        ev = write_pack(self.tmp / "ev1", skills=("alpha",),
+                        sessions=[session("s1", ["skill:alpha"], corrections=1)],
+                        samples=[correction("s1", 1)])
+        gym.accrue(self.state, [ev], "2026-06-01", self.cfg)
+        gone = write_pack(self.tmp / "ev2", skills=("other",))
+        for run in ("2026-06-02", "2026-06-03", "2026-06-04"):
+            gym.accrue(self.state, [gone], run, self.cfg)
+        self.assertTrue(self.status_by_id()["skill:alpha"]["retired"])
+        gym.accrue(self.state, [write_pack(self.tmp / "ev3", skills=("alpha",))],
+                   "2026-06-05", self.cfg)
+        row = self.status_by_id()["skill:alpha"]
+        self.assertFalse(row["retired"])
+        self.assertEqual(row["failure_cases"], 1)
+
+    def test_empty_inventory_never_retires_the_registry(self):
+        gym.accrue(self.state, [write_pack(self.tmp / "ev1", skills=("alpha",))],
+                   "2026-06-01", self.cfg)
+        blank = self.tmp / "blank"
+        blank.mkdir()
+        for run in ("2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05"):
+            gym.accrue(self.state, [blank], run, self.cfg)
+        self.assertFalse(self.status_by_id()["skill:alpha"]["retired"])
+
+
+class TestAccrual(GymCase):
+    def test_cases_attach_to_the_artifacts_active_in_that_session(self):
+        ev = write_pack(
+            self.tmp / "ev", skills=("alpha", "beta"),
+            sessions=[session("s1", ["skill:alpha"], corrections=1),
+                      session("s2", ["skill:beta"], corrections=0)],
+            samples=[correction("s1", 1)], working=[working_row("s2", 2)])
+        gym.accrue(self.state, [ev], "2026-06-01", self.cfg)
+        rows = self.status_by_id()
+        self.assertEqual((rows["skill:alpha"]["failure_cases"], rows["skill:alpha"]["working_cases"]),
+                         (1, 0))
+        self.assertEqual((rows["skill:beta"]["failure_cases"], rows["skill:beta"]["working_cases"]),
+                         (0, 1))
+
+    def test_working_excerpts_from_corrected_sessions_are_refused(self):
+        ev = write_pack(self.tmp / "ev", skills=("alpha",),
+                        sessions=[session("s1", ["skill:alpha"], corrections=2)],
+                        working=[working_row("s1", 1)])
+        gym.accrue(self.state, [ev], "2026-06-01", self.cfg)
+        self.assertEqual(self.status_by_id()["skill:alpha"]["working_cases"], 0)
+
+    def test_overlapping_windows_do_not_duplicate_cases(self):
+        ev = write_pack(self.tmp / "ev", skills=("alpha",),
+                        sessions=[session("s1", ["skill:alpha"], corrections=1)],
+                        samples=[correction("s1", 1)])
+        gym.accrue(self.state, [ev], "2026-06-01", self.cfg)
+        summary = gym.accrue(self.state, [ev], "2026-06-02", self.cfg)
+        self.assertEqual(summary["added_failure"], 0)
+        self.assertEqual(self.status_by_id()["skill:alpha"]["failure_cases"], 1)
+
+    def test_cases_carry_harness_session_and_timestamp_and_are_redacted(self):
+        smp = correction("s1", 1)
+        smp["user_text"] = "no, the key sk-ant-api03-FAKEFAKEFAKEFAKEFAKE must not be stored"
+        ev = write_pack(self.tmp / "ev", skills=("alpha",), harness="codex",
+                        sessions=[session("s1", ["skill:alpha"], corrections=1)], samples=[smp])
+        gym.accrue(self.state, [ev], "2026-06-01", self.cfg)
+        case = gym.load_corpus(gym.gym_dir(self.state), "skill:alpha")["failure"][0]
+        self.assertEqual(case["harness"], "codex")
+        self.assertEqual(case["session"], "s1")
+        self.assertEqual(case["ts"], "2026-06-01T10:00:00Z")
+        self.assertIn("[REDACTED:", case["user_text"])
+        self.assertNotIn("sk-ant-api03-FAKEFAKEFAKEFAKEFAKE", case["user_text"])
+
+    def test_multiple_harness_packs_merge_into_one_corpus(self):
+        cc = write_pack(self.tmp / "cc", skills=("alpha",),
+                        sessions=[session("s1", ["skill:alpha"], corrections=1)],
+                        samples=[correction("s1", 1)])
+        cx = write_pack(self.tmp / "cx", skills=("alpha",), harness="codex",
+                        sessions=[session("s9", ["skill:alpha"], corrections=1)],
+                        samples=[correction("s9", 2)])
+        gym.accrue(self.state, [cc, cx], "2026-06-01", self.cfg)
+        cases = gym.load_corpus(gym.gym_dir(self.state), "skill:alpha")["failure"]
+        self.assertEqual({c["harness"] for c in cases}, {"claude-code", "codex"})
+
+    def test_sessions_without_an_activation_map_attach_nothing(self):
+        ev = write_pack(self.tmp / "ev", skills=("alpha",),
+                        sessions=[{"id": "s1", "project": "p", "corrections_count": 1}],
+                        samples=[correction("s1", 1)])
+        gym.accrue(self.state, [ev], "2026-06-01", self.cfg)
+        self.assertEqual(self.status_by_id()["skill:alpha"]["failure_cases"], 0)
+
+
+class TestRetentionAndFloor(GymCase):
+    def _pack_with(self, n_failure, n_working, skill="alpha"):
+        sessions = [session("f", [f"skill:{skill}"], corrections=n_failure),
+                    session("w", [f"skill:{skill}"], corrections=0)]
+        return write_pack(self.tmp / f"ev-{n_failure}-{n_working}", skills=(skill,),
+                          sessions=sessions,
+                          samples=[correction("f", i) for i in range(1, n_failure + 1)],
+                          working=[working_row("w", i) for i in range(1, n_working + 1)])
+
+    def test_cases_age_out_fifo_past_the_cap(self):
+        cfg = json.loads(json.dumps(self.cfg))
+        cfg["gym"]["max_cases_per_side"] = 3
+        gym.accrue(self.state, [self._pack_with(6, 0)], "2026-06-01", cfg)
+        cases = gym.load_corpus(gym.gym_dir(self.state), "skill:alpha")["failure"]
+        self.assertEqual(len(cases), 3)
+        self.assertEqual([c["ts"] for c in cases],
+                         ["2026-06-04T10:00:00Z", "2026-06-05T10:00:00Z", "2026-06-06T10:00:00Z"])
+
+    def test_below_floor_is_unscorable_never_a_score(self):
+        gym.accrue(self.state, [self._pack_with(3, 2)], "2026-06-01", self.cfg)
+        row = self.status_by_id()["skill:alpha"]
+        self.assertFalse(row["scorable"])
+        self.assertIn("working 2/3", row["reason"])
+
+    def test_floor_met_on_both_sides_is_scorable(self):
+        gym.accrue(self.state, [self._pack_with(3, 3)], "2026-06-01", self.cfg)
+        row = self.status_by_id()["skill:alpha"]
+        self.assertTrue(row["scorable"], row["reason"])
+
+    def test_kinds_without_an_activation_signal_are_unscorable(self):
+        gym.accrue(self.state, [write_pack(self.tmp / "ev", skills=(), hooks=("hook:settings",))],
+                   "2026-06-01", self.cfg)
+        row = self.status_by_id()["hook:settings"]
+        self.assertFalse(row["scorable"])
+        self.assertIn("activation", row["reason"])
+
+
+class TestCliAndPermissions(GymCase):
+    def test_corpus_files_are_owner_only(self):
+        ev = write_pack(self.tmp / "ev", skills=("alpha",),
+                        sessions=[session("s1", ["skill:alpha"], corrections=1)],
+                        samples=[correction("s1", 1)])
+        gym.accrue(self.state, [ev], "2026-06-01", self.cfg)
+        gdir = gym.gym_dir(self.state)
+        self.assertEqual((gdir / "registry.json").stat().st_mode & 0o777, 0o600)
+        for f in (gdir / "corpus").glob("*.json"):
+            self.assertEqual(f.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(gdir.stat().st_mode & 0o777, 0o700)
+
+    def test_update_then_status_cli(self):
+        ev = write_pack(self.tmp / "ev", skills=("alpha",), agents=("helper",),
+                        sessions=[session("s1", ["skill:alpha"], corrections=1)],
+                        samples=[correction("s1", 1)])
+        with self.assertRaises(SystemExit) as cm:
+            gym.main(["update", "--evidence", str(ev), "--state", str(self.state),
+                      "--run-id", "2026-06-01"])
+        self.assertEqual(cm.exception.code, 0)
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit):
+            gym.main(["status", "--state", str(self.state), "--json"])
+        rows = json.loads(buf.getvalue())["artifacts"]
+        self.assertEqual({r["id"] for r in rows}, {"skill:alpha", "agent:helper"})
+
+
+if __name__ == "__main__":
+    unittest.main()
