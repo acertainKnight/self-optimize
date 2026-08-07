@@ -135,7 +135,8 @@ def guard(rec: dict, data_root: Path, extra_roots=None) -> bool:
         return bool(kp) and kp[0] in ALLOWED_SETTING_ROOTS
     if t == "frontmatter_edit":
         return ((_under(p.get("file", ""), data_root, "skills") or _under(p.get("file", ""), data_root, "agents"))
-                and p.get("key") in {"model", "disable-model-invocation", "description"})
+                and p.get("key") in {"model", "disable-model-invocation", "description",
+                                      "version", "superseded_by", "requires-tools"})
     if t == "file_ops":
         # no extra-root branch: bounded edits only ever touch an EXISTING artifact,
         # and memory notes stay create-only
@@ -152,6 +153,8 @@ def guard(rec: dict, data_root: Path, extra_roots=None) -> bool:
         return t == "file_create" and _in_extra_root(f, extra_roots)
     if t == "diff":
         return _diff_bounded(p.get("file", ""), data_root, extra_roots)
+    if t == "retire":
+        return _under(p.get("path", ""), data_root, "skills") or _under(p.get("path", ""), data_root, "agents")
     if t == "manual":
         return True  # report-only, never executed
     return False

@@ -34,6 +34,9 @@ DEFAULTS = {
     # opt-in, off by default: bisects the top_n highest-friction sessions with
     # the gym's judge backend to bracket roughly where each went off track.
     "deep_localize": {"enabled": False, "top_n": 3},
+    # curator's stage 2 (merge-text drafting) reuses gym.judge above -- no backend
+    # of its own to configure.
+    "curator": {"dup_body_floor": 0.6, "long_unfired_days": 60},
 }
 
 

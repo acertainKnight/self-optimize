@@ -11,14 +11,17 @@ HARNESS = "claude-code"
 
 ACTION_TYPES_A = {"setting_change", "frontmatter_edit", "file_create", "file_replace",
                   "file_ops"}
-ACTION_TYPES_B = {"diff", "manual"}
+ACTION_TYPES_B = {"diff", "manual", "retire"}
 OP_KINDS = {"add", "delete", "replace"}
 # Applicability is a function of action TYPE, not tier: every type machine-applies
 # except manual (hooks/permissions/free-form hand-off, forever a human step).
-APPLICABLE_TYPES = ACTION_TYPES_A | {"diff"}
+# retire is tier B (reversible move to an archive dir, not a plain edit) but still
+# machine-applicable, same as diff.
+APPLICABLE_TYPES = ACTION_TYPES_A | {"diff", "retire"}
 CATEGORIES = {"bloat", "model-routing", "skill-edit", "new-skill", "claude-md",
               "hooks", "permissions", "settings", "waste",
-              "skill-improve", "new-agent", "new-workflow", "new-plugin", "memory"}
+              "skill-improve", "new-agent", "new-workflow", "new-plugin", "memory",
+              "skill-dedupe", "skill-retire"}
 METRIC_KEYS = {"tokens_per_session", "correction_rate", "duplicate_read_rate",
                "permission_stalls", "base_context_est", "unused_surface_count",
                "model_output_tokens", "none"}

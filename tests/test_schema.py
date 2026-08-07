@@ -55,14 +55,27 @@ class TestSchema(unittest.TestCase):
 
     def test_action_types_and_categories_extended(self):
         self.assertIn("file_replace", schema.ACTION_TYPES_A)
-        self.assertEqual(len(schema.CATEGORIES), 14)
-        for cat in ("skill-improve", "new-agent", "new-workflow", "new-plugin", "memory"):
+        self.assertEqual(len(schema.CATEGORIES), 16)
+        for cat in ("skill-improve", "new-agent", "new-workflow", "new-plugin", "memory",
+                   "skill-dedupe", "skill-retire"):
             self.assertIn(cat, schema.CATEGORIES)
         r = good_rec()
         r["action"] = {"harness": "claude-code", "tier": "A", "type": "file_replace",
                        "payload": {"path": "/x/agents/y.md", "content": "z"}}
         self.assertEqual(schema.validate_rec(r), [])
         r["action"]["tier"] = "B"
+        self.assertTrue(any("tier" in e for e in schema.validate_rec(r)))
+
+    def test_retire_is_tier_b_and_applicable(self):
+        self.assertIn("retire", schema.ACTION_TYPES_B)
+        self.assertIn("retire", schema.APPLICABLE_TYPES)
+        r = good_rec()
+        r["category"] = "skill-retire"
+        r["action"] = {"harness": "claude-code", "tier": "B", "type": "retire",
+                       "payload": {"path": "/x/skills/y/SKILL.md"}}
+        self.assertEqual(schema.validate_rec(r), [])
+        self.assertTrue(schema.is_applicable(r["action"]))
+        r["action"]["tier"] = "A"
         self.assertTrue(any("tier" in e for e in schema.validate_rec(r)))
 
     def test_derive_extra_roots(self):

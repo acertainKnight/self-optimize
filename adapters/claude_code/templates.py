@@ -120,6 +120,24 @@ def _apply_unified_diff(original: str, diff: str) -> str:
     return "\n".join(out) + ("\n" if out else "")
 
 
+def _retired_archive_path(f: Path, data_root: Path) -> Path:
+    """Insert a `.retired` segment right after the sanctioned root the source
+    lives under, keeping the rest of its relative path: `skills/foo/SKILL.md`
+    archives to `skills/.retired/foo/SKILL.md`, `agents/bar.md` to
+    `agents/.retired/bar.md`. Both inventory.py scanners only glob one level
+    deep under their root, so a retired file is invisible to the next
+    inventory scan for free -- no inventory.py change needed. Deliberately
+    narrower than _require_user_md: workflows are not part of the skill
+    library curation covers, so they are refused here even though the caller
+    already confirmed the path is a sanctioned .md file."""
+    target = os.path.normpath(str(f))
+    for sub in ("skills", "agents"):
+        base = os.path.normpath(str(data_root / sub))
+        if target == base or target.startswith(base + os.sep):
+            return Path(base) / ".retired" / Path(target).relative_to(base)
+    raise ValueError(f"retire only applies under skills/agents, not: {f}")
+
+
 def render(action: dict, data_root: Path, extra_roots=None) -> list:
     t = action["type"]
     p = action.get("payload", {})
@@ -207,6 +225,19 @@ def render(action: dict, data_root: Path, extra_roots=None) -> list:
         base = target.read_text() if target.exists() else ""
         new = _apply_unified_diff(base, p["diff"])
         return [(target, new)]
+    if t == "retire":
+        # reversible move to an archive dir, never a delete: two edits sharing
+        # the ordinary snapshot/rollback machinery -- a content of None tells
+        # cmd_apply to remove that path instead of writing to it, which is
+        # exactly what turns a create+delete pair into an atomic-enough move.
+        f = Path(p["path"]).expanduser()
+        _require_user_md(f, data_root)  # confines to skills/agents/workflows, refuses symlinks
+        if not f.exists():
+            raise ValueError(f"no such file: {f}")
+        archive = _retired_archive_path(f, data_root)
+        if archive.exists():
+            raise ValueError(f"archive destination already exists: {archive}")
+        return [(archive, f.read_text(errors="replace")), (f, None)]
     raise ValueError(f"not a renderable action type: {t}")
 
 
