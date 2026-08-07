@@ -119,7 +119,10 @@ Merged on `main` and working:
 - A guidance-debt audit over CLAUDE.md and auto-memory notes: rules earn their token cost
   or get proposed for trimming.
 - Hook proposals: a prose rule that transcripts show being violated becomes a proposed
-  enforced check — as a tier-B item you implement yourself.
+  enforced check — as a tier-B item you implement yourself. So does a correction you have
+  had to repeat across sessions with no rule behind it at all: the analyst picks a rule
+  from a fixed table and fills in its parameters, never a command, and the proposal states
+  which correction category it expects to fall so later runs can score it.
 - Shadow eval on evolver rewrites: a cheap judge is asked, per motivating correction,
   whether the rewritten artifact would have prevented it. The score renders on the
   finding as evidence for your decision. It is not an auto-gate, and it only covers
