@@ -17,6 +17,8 @@ DEFAULTS = {
     "max_budget_tokens": 400000,
     "retain_runs": 10,
     "verify": {"min_sessions": 10, "min_rel_change": 0.10},
+    "gym": {"min_cases_per_side": 3, "max_cases_per_side": 20,
+            "retire_after_absent_runs": 3},
 }
 
 
