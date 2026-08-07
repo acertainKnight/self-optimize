@@ -29,11 +29,28 @@ re-see the same sessions) and FIFO-trimmed to `max_cases_per_side`, oldest first
 
 State lives under `<state>/gym/` (registry.json + corpus/*.json, mode 0600) and never
 enters a repo: real cases are real transcript excerpts.
+
+Scoring (`gym.py score`) judges a candidate artifact text against that corpus and
+reports BOTH sides — how many failure cases it would have prevented AND how many
+working cases it preserves — and nothing here ever applies a change on a score. A
+loop that optimizes one number will find ways to game that number: Prime Intellect's
+prime-agent edits its own harness mid-session with no held-out validation, and in
+their Factorio study the refine loop climbed the production metric partly by
+discovering reward hacks (spawning resources outright). The two-sided score plus a
+human ratifying every apply is the defense; a single auto-gated number is the failure
+mode. Scores are decision support, never an auto-gate.
+
+The judge backend is configured, never hardcoded: `gym.judge.command` in config.json
+is any CLI that reads a prompt on stdin and writes a JSON verdict on stdout. There is
+no default backend, model, or vendor anywhere in this file — an unconfigured judge is
+a refusal with instructions, not a silent fallback to somebody's API.
 """
 import argparse
 import hashlib
 import json
 import re
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -281,6 +298,172 @@ def _scorable(entry: dict, counts: dict, floor: int) -> tuple:
     return True, ""
 
 
+# ---------------------------------------------------------------- judge driver
+JUDGE_UNCONFIGURED = """refusing to score: no judge backend is configured.
+
+Set gym.judge.command in {path} to a CLI that reads a prompt on stdin and writes a
+JSON verdict on stdout, e.g.
+
+  "gym": {{"judge": {{"command": ["<your-cli>", "run", "--model", "{{model}}"],
+                    "model": "<your-model-id>", "timeout_s": 120}}}}
+
+"{{model}}" in any argument is replaced with gym.judge.model. This plugin ships no
+default judge: the backend, the model and the vendor are your choice, and it will
+not pick one for you."""
+
+VERDICT_KEY = {"failure": "prevented", "working": "preserved"}
+
+
+class JudgeError(RuntimeError):
+    pass
+
+
+class JudgeNotConfigured(JudgeError):
+    """Raised instead of guessing a backend. Never caught by the per-case handler:
+    it is raised before any case is judged."""
+
+
+def build_prompt(artifact_id: str, candidate_text: str, case: dict, side: str) -> str:
+    """Deterministic by construction: fixed sections, fixed order, no timestamps and
+    no run ids, so the same candidate and case always produce a byte-identical prompt
+    (and therefore a cacheable prompt hash)."""
+    if side == "failure":
+        exchange = [
+            "--- ASSISTANT (what it did) ---", case.get("assistant_text", ""),
+            "--- END ASSISTANT ---", "",
+            "--- USER (the correction that followed) ---", case.get("user_text", ""),
+            "--- END USER ---", "",
+            "QUESTION: if the assistant had been operating under the candidate artifact",
+            "text above, would this correction still have been needed?",
+            'Reply with exactly {"prevented": true} if the candidate addresses what the',
+            'user corrected, or {"prevented": false} if it does not.']
+    else:
+        exchange = [
+            "--- USER (the request) ---", case.get("user_text", ""),
+            "--- END USER ---", "",
+            "--- ASSISTANT (the response that drew no correction) ---",
+            case.get("assistant_text", ""), "--- END ASSISTANT ---", "",
+            "QUESTION: under the candidate artifact text above, would this exchange still",
+            "have gone well, with no correction needed?",
+            'Reply with exactly {"preserved": true} if the candidate keeps this working,',
+            'or {"preserved": false} if it would have derailed it.']
+    head = ["You are grading one candidate version of an agent-harness artifact against",
+            "one recorded case from real usage. Answer with JSON only, no other output.",
+            "",
+            f"ARTIFACT: {artifact_id}",
+            f"CASE SIDE: {side}",
+            f"CASE ID: {case['id']}",
+            "",
+            "--- CANDIDATE ARTIFACT TEXT ---", candidate_text.strip(),
+            "--- END CANDIDATE ARTIFACT TEXT ---", ""]
+    return "\n".join(head + exchange) + "\n"
+
+
+def parse_verdict(stdout: str, side: str) -> bool:
+    """Accept a bare JSON object, or the first JSON object embedded in chatter — a
+    judge that wraps its answer in prose is common and not worth failing over."""
+    key = VERDICT_KEY[side]
+    obj = None
+    try:
+        obj = json.loads(stdout)
+    except json.JSONDecodeError:
+        m = re.search(r"\{[^{}]*\}", stdout, re.S)
+        if m:
+            try:
+                obj = json.loads(m.group(0))
+            except json.JSONDecodeError:
+                obj = None
+    if not isinstance(obj, dict) or key not in obj:
+        raise JudgeError(f"judge returned no '{key}' verdict: {stdout.strip()[:200]!r}")
+    if not isinstance(obj[key], bool):
+        raise JudgeError(f"'{key}' must be a boolean, got {obj[key]!r}")
+    return obj[key]
+
+
+def run_judge(judge: dict, prompt: str, side: str) -> bool:
+    cmd = [str(part).replace("{model}", str(judge.get("model") or ""))
+           for part in judge["command"]]
+    try:
+        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                              timeout=float(judge.get("timeout_s", 120)))
+    except (OSError, subprocess.SubprocessError) as e:
+        raise JudgeError(f"judge command failed: {e}") from e
+    if proc.returncode != 0:
+        raise JudgeError(f"judge exited {proc.returncode}: {proc.stderr.strip()[:200]}")
+    return parse_verdict(proc.stdout, side)
+
+
+# ---------------------------------------------------------------- scoring
+def _est_tokens(text: str) -> int:
+    return len(text) // 4
+
+
+def score_artifact(state, artifact_id: str, candidate_text: str, cfg: dict,
+                   budget: int | None = None, run_id: str | None = None) -> dict:
+    """Two-sided score for one candidate artifact text. Judge calls are the expensive
+    step, so everything that can refuse before spending does: an unknown, retired or
+    below-floor artifact short-circuits to `unscorable` without invoking the judge at
+    all, and cases that do not fit the token budget are skipped rather than truncated."""
+    gcfg = cfg.get("gym") or {}
+    floor = int(gcfg.get("min_cases_per_side", 3))
+    gdir = gym_dir(state)
+    reg = load_registry(gdir)
+    result = {"artifact": artifact_id, "run_id": run_id,
+              "prevented": {"n": 0, "of": 0}, "preserved": {"n": 0, "of": 0},
+              "unscorable": True, "reason": "", "errors": 0, "skipped_budget": 0,
+              "tokens_est": 0, "per_case": []}
+
+    entry = reg["artifacts"].get(artifact_id)
+    if entry is None:
+        result["reason"] = f"{artifact_id} is not in the gym registry"
+        return result
+    corpus = load_corpus(gdir, artifact_id)
+    counts = {side: len(corpus[side]) for side in SIDES}
+    ok, reason = _scorable(entry, counts, floor)
+    if not ok:
+        result["reason"] = reason
+        return result
+
+    judge = gcfg.get("judge") or {}
+    if not judge.get("command"):
+        raise JudgeNotConfigured(artifact_id)
+
+    spent = 0
+    judged = {"failure": [0, 0], "working": [0, 0]}   # [true verdicts, verdicts total]
+    for side in SIDES:
+        for case in sorted(corpus[side], key=lambda c: c["id"]):
+            prompt = build_prompt(artifact_id, candidate_text, case, side)
+            row = {"case": case["id"], "side": side, "verdict": None,
+                   "prompt_hash": hashlib.sha256(prompt.encode()).hexdigest()[:12]}
+            est = _est_tokens(prompt)
+            if budget and spent + est > budget:
+                row["error"] = "skipped: token budget exhausted"
+                result["skipped_budget"] += 1
+                result["per_case"].append(row)
+                continue
+            spent += est
+            try:
+                row["verdict"] = run_judge(judge, prompt, side)
+                judged[side][1] += 1
+                judged[side][0] += int(row["verdict"])
+            except JudgeError as e:
+                row["error"] = str(e)
+                result["errors"] += 1
+            result["per_case"].append(row)
+    result["tokens_est"] = spent
+    result["prevented"] = {"n": judged["failure"][0], "of": judged["failure"][1]}
+    result["preserved"] = {"n": judged["working"][0], "of": judged["working"][1]}
+    thin = [s for s in SIDES if judged[s][1] < floor]
+    if thin:
+        result["reason"] = ("too few usable verdicts to score: "
+                            + ", ".join(f"{s} {judged[s][1]}/{floor}" for s in thin)
+                            + f" ({result['errors']} judge errors, "
+                            f"{result['skipped_budget']} skipped for budget)")
+    else:
+        result["unscorable"] = False
+    return result
+
+
 # ---------------------------------------------------------------- CLI
 def cmd_update(a) -> int:
     import so_config
@@ -310,6 +493,39 @@ def cmd_status(a) -> int:
     return 0
 
 
+def cmd_score(a) -> int:
+    import so_config
+    _, state = so_config.resolve(None, a.state)
+    cfg = so_config.load_config(state)
+    candidate = Path(a.candidate).expanduser()
+    if not candidate.exists():
+        print(f"refusing to score: candidate file not found: {candidate}", file=sys.stderr)
+        return 2
+    budget = a.max_budget if a.max_budget is not None else cfg.get("max_budget_tokens", 0)
+    try:
+        result = score_artifact(state, a.artifact, candidate.read_text(errors="replace"),
+                                cfg, budget=budget, run_id=a.run_id)
+    except JudgeNotConfigured:
+        print(JUDGE_UNCONFIGURED.format(path=Path(state) / "config.json"), file=sys.stderr)
+        return 2
+    result["candidate"] = str(candidate)
+    if a.out:
+        out = Path(a.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        _write_json(out, result)
+    else:
+        print(json.dumps(result, indent=1))
+    if result["unscorable"]:
+        print(f"gym score: {a.artifact} unscorable — {result['reason']}")
+    else:
+        p, w = result["prevented"], result["preserved"]
+        print(f"gym score: {a.artifact} prevented {p['n']}/{p['of']} failure cases, "
+              f"preserved {w['n']}/{w['of']} working cases "
+              f"(~{result['tokens_est']} judge input tokens; evidence for your decision, "
+              f"never an auto-gate)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="eval gym: per-artifact case corpus")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -325,6 +541,16 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--state", default=None)
     st.add_argument("--json", action="store_true")
     st.set_defaults(func=cmd_status)
+
+    sc = sub.add_parser("score", help="score a candidate artifact text against its corpus")
+    sc.add_argument("--artifact", required=True, help="registry id, e.g. skill:<name>")
+    sc.add_argument("--candidate", required=True, help="file holding the candidate text")
+    sc.add_argument("--state", default=None)
+    sc.add_argument("--out", default=None, help="write the score JSON here (default: stdout)")
+    sc.add_argument("--max-budget", type=int, default=None,
+                    help="cap judge input tokens; cases past the cap are skipped, not truncated")
+    sc.add_argument("--run-id", default=date.today().isoformat())
+    sc.set_defaults(func=cmd_score)
     return ap
 
 
