@@ -17,6 +17,23 @@ import redact
 DEFAULT_CORRECTION_RE = re.compile(
     r"(?i)^\s*(no\b|nope\b|not (what|that|right)|that'?s (wrong|not)|actually\b|"
     r"instead\b|undo\b|revert\b|stop\b|don'?t\b|i meant\b|wrong\b|why did you)")
+# Silent-failure prefilter (issue #31, REFLECT-style): most real friction never raises
+# an exception or triggers DEFAULT_CORRECTION_RE — the assistant claims the work is
+# done and the user just redoes or contradicts it in the next message, often without
+# any of the negation words above ("still failing", "same error", "try again"). Two
+# patterns, both required: the PRIOR assistant turn reads as a completion claim, and
+# the user's reply reads as a redo/contradiction. Either half alone is too common to
+# be signal on its own (assistants say "done" constantly; users say "still" for other
+# reasons), so both configurable via so_config (completion_claim_regex/silent_failure_regex).
+DEFAULT_COMPLETION_CLAIM_RE = re.compile(
+    r"(?i)\b(done|fixed|resolved|completed|implemented|all set|"
+    r"should (now )?(work|pass|be fixed)|tests? (now )?pass(ing)?|"
+    r"no more errors|working now|that (should )?(do it|fix it))\b")
+DEFAULT_SILENT_FAILURE_RE = re.compile(
+    r"(?i)(still (fail(ing)?|broken|not work|happening|there|the same|wrong)|"
+    r"didn'?t (work|fix|help)|doesn'?t work|does not work|not (working|fixed)\b|"
+    r"same (error|issue|problem|bug)|try(ing)? again|back to square one|"
+    r"nope,? (still|same)|that'?s not (fixed|working))")
 REJECTION_RE = re.compile(
     r"(?i)(user (declined|doesn'?t want)|permission.{0,30}denied|rejected this)")
 REVERT_RE = re.compile(r"git\s+(revert\b|reset\s+--hard|checkout\s+--)")
@@ -65,13 +82,17 @@ def _bare(name) -> str:
     return str(name).split(":")[-1]
 
 
-def parse_session(path: Path, project: str, correction_re, counters: dict) -> dict:
+def parse_session(path: Path, project: str, correction_re, counters: dict,
+                  claim_re=None, silent_re=None) -> dict:
+    claim_re = claim_re or DEFAULT_COMPLETION_CLAIM_RE
+    silent_re = silent_re or DEFAULT_SILENT_FAILURE_RE
     s = {"id": Path(path).stem, "project": project, "cwd": None,
          "harness_version": None, "started_at": None, "ended_at": None, "turns": 0,
          "input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_write": 0,
          "sidechain_output_tokens": 0, "models": {}, "corrections": [],
          "duplicate_reads": 0, "repeated_calls": 0, "permission_stalls": 0,
          "revert_events": 0, "reasks": 0, "ended_on_correction": 0,
+         "silent_failure_candidates": 0,
          "redactions": 0, "activation": Counter(), "_stall_details": [],
          "_working": []}
     read_paths, call_keys = Counter(), Counter()
@@ -165,13 +186,9 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
             if side or rec.get("isMeta"):
                 continue
             text = _text(msg)
+            is_correction = bool(text and correction_re.search(text[:200]))
+            prior, prior_model = "", None
             if text:
-                user_texts.append(text[:400])
-                last_user_was_correction = bool(correction_re.search(text[:200]))
-                if not last_user_was_correction:
-                    pending_ask = (ts, text)
-            if text and correction_re.search(text[:200]):
-                prior, prior_model = "", None
                 parent = rec.get("parentUuid")
                 for _ in range(5):  # walk up to the nearest assistant text
                     if parent not in texts_by_uuid:
@@ -181,15 +198,32 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
                         prior, prior_model = ptext, pmodel
                         break
                     parent = gp
+            # silent-failure candidate: the nearest prior assistant turn reads as a
+            # completion claim AND this user turn reads as a redo/contradiction — see
+            # DEFAULT_COMPLETION_CLAIM_RE/DEFAULT_SILENT_FAILURE_RE above for why both
+            # sides are required.
+            is_silent_failure = bool(
+                text and prior and claim_re.search(prior[:400]) and silent_re.search(text[:200]))
+            if text:
+                user_texts.append(text[:400])
+                last_user_was_correction = is_correction or is_silent_failure
+                if not last_user_was_correction:
+                    pending_ask = (ts, text)
+            if is_correction or is_silent_failure:
+                if is_silent_failure:
+                    s["silent_failure_candidates"] += 1
+                pattern = (correction_re.search(text[:200]).group(0).strip() if is_correction
+                          else silent_re.search(text[:200]).group(0).strip())
                 ut, r1 = redact.scrub(text[:1200])
                 pa, r2 = redact.scrub(prior)
                 s["redactions"] += r1 + r2
                 s["corrections"].append({
                     "uuid": rec.get("uuid"), "ts": ts,
-                    "pattern": correction_re.search(text[:200]).group(0).strip(),
+                    "pattern": pattern,
                     "user_text": ut,
                     "prior_assistant_text": pa,
                     "model": prior_model,
+                    "silent_failure_candidate": is_silent_failure,
                 })
 
     s["duplicate_reads"] = sum(c - 1 for c in read_paths.values() if c > 1)
@@ -219,7 +253,9 @@ import schema as so_schema
 
 
 def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, caps,
-                   flagged=frozenset()) -> dict:
+                   flagged=frozenset(), claim_re=None, silent_re=None) -> dict:
+    claim_re = claim_re or DEFAULT_COMPLETION_CLAIM_RE
+    silent_re = silent_re or DEFAULT_SILENT_FAILURE_RE
     counters = {"skipped_lines": 0, "files": 0}
     sessions, act, samples, working, dup_paths, corr_by_model = [], {}, [], [], {}, {}
     stall_tools, stall_examples = Counter(), []
@@ -231,7 +267,7 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
         if any(fnmatch(project, g) for g in exclude):
             continue
         counters["files"] += 1
-        s = parse_session(f, project, correction_re, counters)
+        s = parse_session(f, project, correction_re, counters, claim_re, silent_re)
         if since_iso and (s["started_at"] or "") < since_iso:
             continue
         # activation stays on the session record too: the eval gym attaches cases to
@@ -253,7 +289,8 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
             samples.append({"session": s["id"], "project": project, "ts": c["ts"],
                             "kind": "correction", "pattern": c["pattern"],
                             "user_text": c["user_text"],
-                            "prior_assistant_text": c["prior_assistant_text"]})
+                            "prior_assistant_text": c["prior_assistant_text"],
+                            "silent_failure_candidate": c.get("silent_failure_candidate", False)})
             if c.get("model"):
                 corr_by_model[c["model"]] = corr_by_model.get(c["model"], 0) + 1
         s["corrections_count"] = len(corrs)
@@ -273,7 +310,7 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
            "cache_read": 0, "cache_write": 0}
     waste = {"duplicate_reads_total": 0, "repeated_calls_total": 0, "permission_stalls_total": 0,
              "main_model_heavy_sessions": 0, "revert_events_total": 0, "reasks_total": 0,
-             "ended_on_correction_total": 0}
+             "ended_on_correction_total": 0, "silent_failure_candidates_total": 0}
     corr_total = 0
     for s in sessions:
         for k in ("turns", "input_tokens", "output_tokens", "cache_read", "cache_write"):
@@ -295,6 +332,7 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
         waste["revert_events_total"] += s["revert_events"]
         waste["reasks_total"] += s["reasks"]
         waste["ended_on_correction_total"] += s["ended_on_correction"]
+        waste["silent_failure_candidates_total"] += s["silent_failure_candidates"]
         corr_total += s["corrections_count"]
     usage = {"window": {"since": since_iso, "until": max((s["ended_at"] or "" for s in sessions), default=None)},
              "totals": tot, "per_project": per_project, "per_model": per_model,
@@ -475,7 +513,7 @@ def merge_usage(docs: dict) -> dict:
                           "cache_read", "cache_write")}
     waste_keys = ("duplicate_reads_total", "repeated_calls_total", "permission_stalls_total",
                   "main_model_heavy_sessions", "revert_events_total", "reasks_total",
-                  "ended_on_correction_total")
+                  "ended_on_correction_total", "silent_failure_candidates_total")
     waste = {k: 0 for k in waste_keys}
     parse = {"skipped_lines": 0, "files": 0, "redactions": 0}
     per_project, per_model, corr_by_model = {}, {}, {}
@@ -755,6 +793,10 @@ def main(argv=None):
     data_root, state = so_config.resolve(a.data_root, a.state)
     cfg = so_config.load_config(state)
     correction_re = re.compile(cfg["correction_regex"]) if cfg["correction_regex"] else DEFAULT_CORRECTION_RE
+    claim_re = (re.compile(cfg["completion_claim_regex"]) if cfg["completion_claim_regex"]
+               else DEFAULT_COMPLETION_CLAIM_RE)
+    silent_re = (re.compile(cfg["silent_failure_regex"]) if cfg["silent_failure_regex"]
+                else DEFAULT_SILENT_FAILURE_RE)
     since = a.since
     if since is None and cfg["since_days"]:
         since = (datetime.now(timezone.utc) - timedelta(days=cfg["since_days"])).isoformat()
@@ -767,7 +809,8 @@ def main(argv=None):
     try:
         packs.append((so_schema.HARNESS,
                       collect_corpus(data_root, since, cfg["project_include"],
-                                     cfg["project_exclude"], correction_re, caps, flagged)))
+                                     cfg["project_exclude"], correction_re, caps, flagged,
+                                     claim_re, silent_re)))
     except Exception as e:  # a harness that blows up is reported, not fatal
         failures[so_schema.HARNESS] = redact.scrub(f"{type(e).__name__}: {e}")[0][:300]
     for spec in discover_harnesses(cfg):
@@ -787,6 +830,7 @@ def main(argv=None):
     ok = ",".join(f"{k}:{v['sessions']}" for k, v in per_harness.items() if v["status"] == "ok")
     failed = ",".join(k for k, v in per_harness.items() if v["status"] == "failed")
     print(f"sessions={t['sessions']} corrections={pack['usage']['corrections']['total']} "
+          f"silent_failures={pack['usage']['waste']['silent_failure_candidates_total']} "
           f"dup_reads={pack['usage']['waste']['duplicate_reads_total']} "
           f"stalls={pack['usage']['waste']['permission_stalls_total']} "
           f"parse_skipped={pack['usage']['parse']['skipped_lines']} "

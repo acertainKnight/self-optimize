@@ -52,6 +52,61 @@ class TestParseSession(unittest.TestCase):
         self.assertEqual(counters["skipped_lines"], 3)
         self.assertEqual(s["turns"], 1)
 
+    def _session_lines(self, assistant_text, user_text):
+        return [
+            json.dumps({"type": "user", "uuid": "u1", "timestamp": "2026-06-20T10:00:00Z",
+                        "message": {"role": "user",
+                                    "content": "the login button is broken, please fix it"}}),
+            json.dumps({"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+                        "timestamp": "2026-06-20T10:00:05Z",
+                        "message": {"role": "assistant", "model": "m",
+                                    "usage": {"input_tokens": 5, "output_tokens": 5},
+                                    "content": [{"type": "text", "text": assistant_text}]}}),
+            json.dumps({"type": "user", "uuid": "u2", "parentUuid": "a1",
+                        "timestamp": "2026-06-20T10:00:10Z",
+                        "message": {"role": "user", "content": user_text}}),
+        ]
+
+    def _parse(self, assistant_text, user_text):
+        import os, tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+            f.write("\n".join(self._session_lines(assistant_text, user_text)) + "\n")
+            path = f.name
+        counters = {"skipped_lines": 0}
+        s = collect.parse_session(pathlib.Path(path), "p", collect.DEFAULT_CORRECTION_RE, counters)
+        os.unlink(path)
+        return s
+
+    def test_claim_then_redo_pair_flagged_deterministically(self):
+        s = self._parse("Fixed! The tests should pass now.",
+                        "still failing, same error as before")
+        self.assertEqual(s["silent_failure_candidates"], 1)
+        self.assertEqual(len(s["corrections"]), 1)
+        c = s["corrections"][0]
+        self.assertTrue(c["silent_failure_candidate"])
+        self.assertEqual(c["user_text"], "still failing, same error as before")
+        self.assertIn("Fixed!", c["prior_assistant_text"])
+        # deterministic: same input, same flag, every time
+        s2 = self._parse("Fixed! The tests should pass now.",
+                         "still failing, same error as before")
+        self.assertEqual(s2["silent_failure_candidates"], 1)
+
+    def test_benign_thanks_after_completion_claim_does_not_flag(self):
+        s = self._parse("Fixed! The tests should pass now.", "thanks, that's perfect")
+        self.assertEqual(s["silent_failure_candidates"], 0)
+        self.assertEqual(len(s["corrections"]), 0)
+
+    def test_new_topic_after_completion_claim_does_not_flag(self):
+        s = self._parse("Fixed! The tests should pass now.",
+                        "can you also add a README section for this?")
+        self.assertEqual(s["silent_failure_candidates"], 0)
+        self.assertEqual(len(s["corrections"]), 0)
+
+    def test_redo_language_without_a_prior_completion_claim_does_not_flag(self):
+        # the redo wording alone isn't signal — it needs the prior assistant claim too
+        s = self._parse("Reading the file first.", "still failing, same error as before")
+        self.assertEqual(s["silent_failure_candidates"], 0)
+
     def test_namespaced_skill_and_agent_activations_normalize_to_bare(self):
         import os, tempfile
         line = json.dumps({
