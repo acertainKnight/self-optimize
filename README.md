@@ -119,7 +119,10 @@ Merged on `main` and working:
 - A guidance-debt audit over CLAUDE.md and auto-memory notes: rules earn their token cost
   or get proposed for trimming.
 - Hook proposals: a prose rule that transcripts show being violated becomes a proposed
-  enforced check — as a tier-B item you implement yourself.
+  enforced check — as a tier-B item you implement yourself. So does a correction you have
+  had to repeat across sessions with no rule behind it at all: the analyst picks a rule
+  from a fixed table and fills in its parameters, never a command, and the proposal states
+  which correction category it expects to fall so later runs can score it.
 - Shadow eval on evolver rewrites: a cheap judge is asked, per motivating correction,
   whether the rewritten artifact would have prevented it. The score renders on the
   finding as evidence for your decision. It is not an auto-gate, and it only covers
@@ -269,11 +272,16 @@ categories MAST has no reason to cover.
 paper's observation is that coding agents violate previously corrected preferences across
 sessions, and its answer is to compile corrections into runtime enforcement rather than
 into more prose the model may or may not read. That is the difference between a rule in
-CLAUDE.md and a hook that fails the call. Shipping today: a prose rule the transcripts
-show being violated gets proposed as an enforced check. Issue #28 extends this to
-corrections with no existing rule behind them. Generated enforcement stays tier B forever
-— a machine that can install its own checks can install a check that silences its own
-evidence.
+CLAUDE.md and a hook that fails the call. Both halves ship today: a prose rule the
+transcripts show being violated gets proposed as an enforced check, and so does a
+correction repeated across sessions with no rule behind it at all. The analyst picks a
+rule from a fixed table and fills in its parameters — it never writes a command, and the
+check's logic is repo code in `hooks/enforce.py`. Every proposal states which correction
+category it expects to fall, and `verify.py` scores that prediction against labeled
+correction counts on later runs, so a check that changed nothing shows up as such instead
+of becoming quietly permanent. Generated enforcement stays tier B forever — a machine
+that can install its own checks can install a check that silences its own evidence — so
+you install it by hand and record that with `/self-optimize adopt <id>`.
 
 **Voyager** ([arXiv 2305.16291](https://arxiv.org/abs/2305.16291)) **and TroVE**
 ([arXiv 2401.12869](https://arxiv.org/abs/2401.12869)). Adapt curation over accretion.

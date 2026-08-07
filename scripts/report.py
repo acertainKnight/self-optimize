@@ -6,6 +6,7 @@ import json
 import shutil
 from pathlib import Path
 
+import enforcement
 import ledger as ledger_mod
 import labels as labels_mod
 import variants
@@ -167,8 +168,53 @@ def _fronts_block(fronts: dict) -> list:
     return L
 
 
+def _enforcement_block(enf: dict, rid: str) -> list:
+    """A proposed check renders as three things: what it does, what it predicts,
+    and the exact settings.json block to paste. Everything shown is rendered from
+    the rule table in enforcement.py — the analyst supplied a rule name and its
+    parameters, never a command."""
+    try:
+        r = enforcement.render(enf)
+    except (KeyError, TypeError, ValueError, IndexError):
+        return ["- enforcement: payload could not be rendered — ignore this block", ""]
+    pred = enf.get("prediction") or {}
+    L = [f"- enforcement ({r['kind']}, permanently tier B — never auto-applied): "
+         f"{r['summary']}",
+         f"- prediction: `{pred.get('category')}` corrections fall after adoption, "
+         f"scored on every labeled run from here on",
+         f"- install it yourself, then record it: `/self-optimize adopt {rid}`", ""]
+    body = (json.dumps(r["settings_block"], indent=2) if "settings_block" in r
+            else r["command"])
+    return L + ["```", body, "```", ""]
+
+
+def _share_cell(side: dict) -> str:
+    share = side.get("share")
+    if share is None:
+        return "-"
+    return f"{side.get('count', 0)}/{side.get('total', 0)} ({share * 100:.0f}%)"
+
+
+def _enforcement_section(rows: list) -> list:
+    L = ["## Enforcement proposals: predicted vs observed", "",
+         "Each adopted check predicted one correction category would fall. The "
+         "comparison is that category's share of labeled corrections, on runs after "
+         "adoption — a collection window can still overlap the pre-adoption period, "
+         "so read a run of these, not one row.", "",
+         "| id | check | predicted | at adoption | now | change | verdict | note |",
+         "|---|---|---|---|---|---|---|---|"]
+    for r in rows:
+        rel = f"{r['rel_change'] * 100:+.0f}%" if r.get("rel_change") is not None else "-"
+        L.append(f"| `{r['id']}` | {_cell(r['title'])} | {_cell(r['category'])} down | "
+                 f"{_share_cell(r.get('baseline') or {})} | "
+                 f"{_share_cell(r.get('observed') or {})} | {rel} | **{r['verdict']}** | "
+                 f"{_cell(r.get('note') or '')} |")
+    return L + [""]
+
+
 def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
-           cumulative=None, shadow=None, roi=None, gym=None, security=None, fronts=None) -> str:
+           cumulative=None, shadow=None, roi=None, gym=None, security=None, fronts=None,
+           enforcement_rows=None) -> str:
     L = [f"# self-optimize report — {run_id}", ""]
     if verify_rows:
         L += ["## Applied changes: outcomes", "",
@@ -182,6 +228,8 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
                      f"{_num(v.get('baseline'))} | {_num(v.get('value'))} | {v.get('n')} | "
                      f"{_cell(v.get('note') or '')} |")
         L.append("")
+    if enforcement_rows:
+        L += _enforcement_section(enforcement_rows)
     L += [f"## Findings ({len(findings)})", ""]
     if findings:
         L += ["| # | id | category | impact | tier | title |", "|---|---|---|---|---|---|"]
@@ -214,6 +262,8 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
                      f"{loc.get('rationale') or 'no rationale given'}")
         if r.get("prior_rejection"):
             L.append(f"- previously rejected: {r['prior_rejection']} — evidence has changed since")
+        if isinstance(r.get("enforcement"), dict):
+            L += _enforcement_block(r["enforcement"], r["id"])
         if r["action"].get("type") == "file_ops":
             L += _ops_block(r["action"].get("payload") or {})
         if r["action"]["tier"] == "A":
@@ -332,9 +382,11 @@ def main(argv=None):
     evdir = Path(a.evidence)
     fdata = json.loads((evdir / "findings.json").read_text())
     usage = json.loads((evdir / "usage.json").read_text())
-    verify_rows = []
+    verify_rows, enforcement_rows = [], []
     if (evdir / "verify.json").exists():
-        verify_rows = json.loads((evdir / "verify.json").read_text())["rows"]
+        vdata = json.loads((evdir / "verify.json").read_text())
+        verify_rows = vdata["rows"]
+        enforcement_rows = vdata.get("enforcement") or []
     tokens = _parse_analyst_tokens(a.analyst_tokens)
     if tokens is None and (evdir / "analyst_tokens.json").exists():
         try:
@@ -361,7 +413,8 @@ def main(argv=None):
     md = render(a.run_id, fdata["findings"], fdata["dropped"], verify_rows,
                 _trend(state), usage, {"analyst_tokens": tokens}, cumulative=cumulative,
                 shadow=shadow, roi={"saved": saved, "spent": spent}, gym=gym, security=security,
-                fronts=variants.all_fronts(state, max_members))
+                fronts=variants.all_fronts(state, max_members),
+                enforcement_rows=enforcement_rows)
     rdir = Path(cfg["report_dir"])
     rdir.mkdir(parents=True, exist_ok=True)
     out = rdir / f"{a.run_id}.md"

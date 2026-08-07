@@ -6,6 +6,7 @@ import json
 import math
 from pathlib import Path
 
+import enforcement
 import ledger as ledger_mod
 import metriclib
 import papercuts
@@ -133,6 +134,34 @@ def verify_entries(entries: dict, sessions: list, inventory, cfg: dict,
     return rows
 
 
+def verify_enforcement(entries: dict, metrics_rows: list, cfg: dict) -> list:
+    """Score every adopted enforcement proposal against the prediction it shipped
+    with: the correction category it said would fall.
+
+    A proposal states its own success metric up front, so the check is arithmetic
+    on the labeled correction counts — no judgement, no LLM, and no way to grade
+    it on a bar chosen after the fact. Verdicts are re-computed every run and
+    never written back as a status: an installed check keeps running, so its
+    prediction stays open to being contradicted by a later run."""
+    rows = []
+    for rid, e in entries.items():
+        if e.get("status") != "adopted":
+            continue
+        rec = e.get("rec") or {}
+        pred = (rec.get("enforcement") or {}).get("prediction") or {}
+        category = pred.get("category")
+        if not category:
+            continue
+        base = e.get("enforcement_baseline") or {}
+        observed, obs_run = enforcement.observed_counts(metrics_rows, base.get("run_id"))
+        row = enforcement.score(base.get("counts"), observed, category,
+                                cfg["verify"]["min_rel_change"])
+        rows.append({"id": rid, "title": rec.get("title", ""), "category": category,
+                     "predicted": "down", "adopted_at": e.get("adopted_at"),
+                     "baseline_run": base.get("run_id"), "observed_run": obs_run, **row})
+    return rows
+
+
 def _mark_cohorts(rows: list, entries: dict) -> None:
     """N applied recs sharing (metric, scope) all measure the same post-apply
     sessions, so their identical numbers are one joint measurement — mark them
@@ -175,8 +204,9 @@ def main(argv=None):
     except (OSError, json.JSONDecodeError):
         settings = None
     rows = verify_entries(entries, sessions, inventory, cfg, settings=settings)
+    enf_rows = verify_enforcement(entries, enforcement.read_metrics_rows(state), cfg)
     out_path = Path(a.out)
-    out_path.write_text(json.dumps({"rows": rows}, indent=1))
+    out_path.write_text(json.dumps({"rows": rows, "enforcement": enf_rows}, indent=1))
     out_path.chmod(0o600)
     for r in rows:
         if r["verdict"] in ("verified", "regressed"):
@@ -212,6 +242,9 @@ def main(argv=None):
     print(f"verified={sum(r['verdict'] == 'verified' for r in rows)} "
           f"regressed={sum(r['verdict'] == 'regressed' for r in rows)} "
           f"inconclusive={sum(r['verdict'] == 'inconclusive' for r in rows)}")
+    if enf_rows:
+        print("enforcement predictions: "
+              + ", ".join(f"{r['id']}={r['verdict']}" for r in enf_rows))
 
 
 if __name__ == "__main__":

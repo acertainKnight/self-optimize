@@ -1,3 +1,11 @@
+This directory holds two hooks. Both ship inert — nothing in the plugin registers
+either one, and installing self-optimize never turns them on.
+
+- `capture_trigger.py` — a **Stop** hook that queues skill-worthy moments for the
+  next run (below).
+- `enforce.py` — a **PreToolUse** check proposed by the loop and installed by you
+  ([Enforcement checks](#enforcement-checks-opt-in-off-by-default)).
+
 # Inline trigger capture (opt-in, off by default)
 
 `capture_trigger.py` is a Claude Code **Stop** hook. It looks at the turn that
@@ -107,3 +115,45 @@ its own small per-session cursor files under
 depends on it running. `collect.py` treats a missing or empty queue exactly
 like it always has, so removing the hook is a clean, total no-op on the rest
 of the pipeline.
+
+# Enforcement checks (opt-in, off by default)
+
+`enforce.py` is a Claude Code **PreToolUse** hook. It reads the tool call about
+to run, applies one named rule with the parameters given on its command line,
+and exits 2 — the code that blocks the call and hands the reason back to the
+model — when the call breaks that rule.
+
+The rules are a fixed table (`scripts/enforcement.py`), and the logic is this
+file. That split is the point: when the loop proposes a check, the analyst
+supplies a rule name and its parameters, never a command, so no text mined out
+of a transcript can end up in a shell.
+
+- `forbid_bash_substring` (`value`) — block any Bash command containing that
+  literal text.
+- `require_bash_flag` (`program`, `flag`) — every invocation of that program
+  must carry that flag.
+- `forbid_write_path` (`prefix`) — no `Write`/`Edit`/`NotebookEdit` under that
+  path.
+
+## Where a proposal comes from
+
+A correction you have had to give in two or more separate sessions is a
+preference the model keeps failing to read, and writing it down again just
+produces more prose to ignore. When the corrected behavior has a mechanically
+checkable shape, the miner proposes it as a check instead, and the report prints
+the settings.json block to paste. Every proposal also states which correction
+category it expects to fall, and `verify.py` scores that prediction against the
+labeled correction counts on later runs — so a check that changes nothing is
+visible rather than quietly permanent.
+
+These proposals are permanently tier B. `apply.py` refuses to install one no
+matter what its evidence looks like: a loop that can install its own checks can
+install a check that silences its own evidence. You paste the block yourself,
+then record it so the prediction can be scored:
+
+    /self-optimize adopt <finding-id>
+
+## Uninstalling
+
+Remove the block from `settings.json` and restart. Nothing else depends on the
+check running; the ledger entry stays, and its prediction simply stops moving.

@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "adapters" / "claude_code"))
 import templates  # noqa: E402
+import enforcement  # noqa: E402
 import ledger as ledger_mod  # noqa: E402
 import metriclib  # noqa: E402
 import schema as so_schema  # noqa: E402
@@ -103,6 +104,17 @@ def cmd_apply(ids, state, data_root, evidence):
             print(f"{rid}: not applicable (status={e['status'] if e else 'unknown'})")
             continue
         rec = e["rec"]
+        if so_schema.is_enforcement(rec):
+            # Permanent refusal, checked on the rec and not on its tier: a loop
+            # that can install its own checks can install one that silences its
+            # own evidence, so no tier, score, or amended action makes an
+            # enforcement proposal machine-appliable. schema.validate_rec pins
+            # these to tier B upstream; this is the gate that holds even when a
+            # rec reaches the ledger some other way.
+            print(f"{rid}: enforcement proposal — never auto-applied (permanently tier B). "
+                  f"Install the check yourself, then record it: "
+                  f"/self-optimize adopt {rid}")
+            continue
         if not so_schema.is_applicable(rec["action"]):
             print(f"{rid}: manual action — complete it yourself (see the report)")
             continue
@@ -205,6 +217,39 @@ def cmd_rollback(rid, state, force=False):
     ledger_mod.append(lpath, {"id": rid, "status": "rolled_back",
                               "evidence_hash": e.get("evidence_hash")})
     print(f"{rid}: rolled back")
+
+
+def cmd_adopt(rid, state, evidence):
+    """Record that a human installed an enforcement proposal's check.
+
+    Nothing is written to the config here — installing the hook is the user's own
+    edit to their settings.json. What this records is the measurement baseline:
+    the labeled correction counts as they stood when the check went in, which is
+    what turns the proposal's prediction into something verify.py can score on
+    later runs instead of a claim nobody ever checks."""
+    lpath = Path(state) / "state" / "ledger.jsonl"
+    e = ledger_mod.load(lpath).get(rid)
+    if not e or not e.get("rec"):
+        print(f"{rid}: unknown recommendation")
+        return
+    rec = e["rec"]
+    if not so_schema.is_enforcement(rec):
+        print(f"{rid}: not an enforcement proposal — nothing to adopt")
+        return
+    if e["status"] not in ("proposed", "approved"):
+        print(f"{rid}: not adoptable (status={e['status']})")
+        return
+    counts, run_id = enforcement.label_counts(Path(evidence), Path(state))
+    baseline = {"run_id": run_id, "counts": counts}
+    if counts is None:
+        print(f"{rid}: WARNING — no labeled corrections on record, so this "
+              f"proposal's prediction cannot be scored until a run labels some")
+    ledger_mod.append(lpath, {"id": rid, "status": "adopted", "rec": rec,
+                              "adopted_at": _now(), "enforcement_baseline": baseline,
+                              "evidence_hash": e.get("evidence_hash")})
+    pred = rec["enforcement"]["prediction"]
+    print(f"{rid}: adopted — predicting {pred['category']} corrections fall from here. "
+          f"Verified against labeled runs after {run_id or 'this one'}.")
 
 
 def cmd_reject(rid, reason, state):
@@ -499,7 +544,10 @@ def main(argv=None):
     a4 = sub.add_parser("decide")
     a4.add_argument("path", nargs="?", default=None)
     a4.add_argument("--evidence", required=True)
-    for x in (a1, a2, a3, a4):
+    a5 = sub.add_parser("adopt")
+    a5.add_argument("--id", required=True)
+    a5.add_argument("--evidence", required=True)
+    for x in (a1, a2, a3, a4, a5):
         x.add_argument("--state", default=None)
         x.add_argument("--data-root", default=None)
     a = ap.parse_args(argv)
@@ -511,6 +559,8 @@ def main(argv=None):
         cmd_rollback(a.id, state, a.force)
     elif a.cmd == "decide":
         cmd_decide(a.path, state, data_root, a.evidence)
+    elif a.cmd == "adopt":
+        cmd_adopt(a.id, state, a.evidence)
     else:
         cmd_reject(a.id, a.reason, state)
 
