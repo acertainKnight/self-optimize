@@ -30,9 +30,13 @@ DEFAULTS = {
     # judge.command is deliberately empty: the gym has NO default backend or provider.
     # You name the CLI that judges cases; missing config is a refusal, not a fallback.
     # max_variants_per_artifact caps the variant archive; over the cap, variants beaten
-    # on BOTH prevented and preserved are evicted before anything else.
+    # on BOTH prevented and preserved are evicted before anything else. `front` is the
+    # budget on seeding an analyst with an artifact's Pareto front: only artifacts
+    # carrying at least min_failure_cases recorded failures get one, and it names at
+    # most max_members versions.
     "gym": {"min_cases_per_side": 3, "max_cases_per_side": 20,
             "retire_after_absent_runs": 3, "max_variants_per_artifact": 20,
+            "front": {"min_failure_cases": 5, "max_members": 4},
             "judge": {"command": [], "model": "", "timeout_s": 120}},
     # opt-in, off by default: bisects the top_n highest-friction sessions with
     # the gym's judge backend to bracket roughly where each went off track.

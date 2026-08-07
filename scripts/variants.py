@@ -160,6 +160,99 @@ def dominated_ids(records: list) -> list:
     return [v["id"] for v in records if any(dominates(o, v) for o in records if o["id"] != v["id"])]
 
 
+# ---------------------------------------------------------------- pareto front
+def pareto_dominates(a: dict, b: dict) -> bool:
+    """Standard Pareto domination on the case-count-weighted score: at least as good on
+    both sides, strictly better on one.
+
+    Both sides are read as rates — verdicts that came back true over cases actually
+    judged — rather than raw counts, because two candidates for the same artifact are
+    not always scored on the same number of cases: a judge error or a budget skip drops
+    a case for one and not the next, and 3/3 is not worse than 4/8.
+
+    This is deliberately not the same rule as `dominates` above. Eviction asks "is this
+    variant worthless?" and answers conservatively, strictly worse on both sides. The
+    front asks "is this variant on the frontier?" and uses the sharper standard rule. A
+    variant that ties another on both sides is on the front beside it, and neither
+    evicts the other.
+    """
+    ra, rb = rates(a), rates(b)
+    if ra is None or rb is None:
+        return False
+    return ra[0] >= rb[0] and ra[1] >= rb[1] and (ra[0] > rb[0] or ra[1] > rb[1])
+
+
+def pareto_front(records: list) -> list:
+    """The non-dominated scored variants, best-preventing first. An unscorable variant
+    is never on the front: an unmeasured candidate has no position to defend."""
+    scored = [v for v in records if rates(v) is not None]
+    front = [v for v in scored
+             if not any(pareto_dominates(o, v) for o in scored if o["id"] != v["id"])]
+    return sorted(front, key=lambda v: (-rates(v)[0], -rates(v)[1], v.get("seq", 0), v["id"]))
+
+
+def front_members(records: list, max_members: int = 4) -> list:
+    """The front, shaped for an analyst's context and for the report: both score sides
+    with their rates, and the edits that produced each member.
+
+    Trimming keeps the extremes. On a front, ordering by prevented rate descending puts
+    the best preserver last — no two members can lead on both sides at once, or the
+    loser would not be on the front — so the first and last members are exactly the pair
+    the reflective question is asked about, and the middle fills by combined score.
+    """
+    ordered = pareto_front(records)
+    if max_members >= 2 and len(ordered) > max_members:
+        fill = sorted(ordered[1:-1],
+                      key=lambda v: (-(rates(v)[0] + rates(v)[1]), v.get("seq", 0)))
+        keep = ({ordered[0]["id"], ordered[-1]["id"]}
+                | {v["id"] for v in fill[:max_members - 2]})
+        ordered = [v for v in ordered if v["id"] in keep]
+    return [_member(v) for v in ordered]
+
+
+def _member(v: dict) -> dict:
+    r = rates(v)
+    s = v.get("scores") or {}
+    prov = v.get("provenance") or {}
+    return {"variant": v["id"], "parent": v.get("parent"), "run_id": v.get("run_id"),
+            "prevented": {**(s.get("prevented") or {}), "rate": round(r[0], 3)},
+            "preserved": {**(s.get("preserved") or {}), "rate": round(r[1], 3)},
+            "title": prov.get("title", ""),
+            "expected_improvement": prov.get("expected_improvement", ""),
+            "ops": [{"op": o.get("op"), "anchor": o.get("anchor"), "text": o.get("text", "")}
+                    for o in (v.get("ops") or []) if isinstance(o, dict)]}
+
+
+def trade_off(members: list) -> str:
+    """One sentence naming what the front actually trades, so nobody has to read two
+    rate columns to see it."""
+    if len(members) < 2:
+        return ""
+    best_prevent = max(members, key=lambda m: m["prevented"]["rate"])
+    best_preserve = max(members, key=lambda m: m["preserved"]["rate"])
+    if best_prevent["variant"] == best_preserve["variant"]:
+        return (f"{best_prevent['variant']} leads on both sides; the others are here "
+                f"because they tie it on one of them.")
+    return (f"{best_prevent['variant']} prevents the most: "
+            f"{best_prevent['prevented']['rate']:.2f} of its failure cases, but it keeps "
+            f"only {best_prevent['preserved']['rate']:.2f} of what already worked. "
+            f"{best_preserve['variant']} is the other end: it keeps "
+            f"{best_preserve['preserved']['rate']:.2f} of what worked and prevents "
+            f"{best_preserve['prevented']['rate']:.2f}. Which trade to take is yours "
+            f"to pick.")
+
+
+def all_fronts(state, max_members: int = 4) -> dict:
+    """{artifact: {members, trade_off}} for every artifact whose archive states a
+    trade-off. A one-member front states none, so it is left out."""
+    out = {}
+    for artifact, records in load_all(state).items():
+        members = front_members(records, max_members)
+        if len(members) >= 2:
+            out[artifact] = {"members": members, "trade_off": trade_off(members)}
+    return out
+
+
 # ---------------------------------------------------------------- retention
 def evict(records: list, cap: int, live: str | None = None) -> tuple:
     """(kept, evicted) for one artifact's archive. Dominated variants go first, oldest

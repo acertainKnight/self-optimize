@@ -82,7 +82,12 @@ def _available_plugins(data_root: Path, installed: dict) -> list:
     return out
 
 
-def build_artifacts(inv: dict, evidence_dir) -> dict:
+def build_artifacts(inv: dict, evidence_dir, state=None, cfg=None) -> dict:
+    """The bodies the evolver reads. With a state dir, each artifact also carries the
+    Pareto front of its already-scored versions (`front`), so the evolver reflects on
+    what has been tried instead of re-deriving one candidate from the live text every
+    run. The front is budgeted: gym.front_context attaches it only above the configured
+    friction threshold, and only when there are two versions to compare."""
     act = {}
     if evidence_dir and (Path(evidence_dir) / "activation.json").exists():
         act = json.loads((Path(evidence_dir) / "activation.json").read_text())["items"]
@@ -100,9 +105,15 @@ def build_artifacts(inv: dict, evidence_dir) -> dict:
         # ponytail: 3 parent levels covers skills/<name>/SKILL.md under any root;
         # the scanners never nest artifacts deeper than that
         symlinked = p.is_symlink() or any(par.is_symlink() for par in list(p.parents)[:3])
-        artifacts.append({"id": f"artifact:{kind}:{item['name']}", "kind": kind,
-                          "source": item["source"], "path": item["path"],
-                          "activation_count": count, "symlinked": symlinked, "body": body})
+        entry = {"id": f"artifact:{kind}:{item['name']}", "kind": kind,
+                 "source": item["source"], "path": item["path"],
+                 "activation_count": count, "symlinked": symlinked, "body": body}
+        if state is not None:
+            import gym
+            front = gym.front_context(state, f"{kind}:{item['name']}", cfg or {})
+            if front:
+                entry["front"] = front
+        artifacts.append(entry)
     return {"schema_version": so_schema.EVIDENCE_VERSION, "harness": so_schema.HARNESS,
             "artifacts": artifacts}
 
@@ -327,16 +338,17 @@ def main(argv=None):
     out_file = Path(a.out) / "inventory.json"
     out_file.write_text(json.dumps(inv, indent=1))
     out_file.chmod(0o600)
-    art = build_artifacts(inv, a.out)
+    art = build_artifacts(inv, a.out, state=state, cfg=so_config.load_config(state))
     art_file = Path(a.out) / "artifacts.json"
     art_file.write_text(json.dumps(art, indent=1))
     art_file.chmod(0o600)
     write_analyst_copies(Path(a.out), Path(a.rules) if a.rules else None)
     update_last_metrics(state, base_context_est=inv["base_context_est"],
                         unused_surface_count=len(inv["unused"]))
+    fronts = sum(1 for x in art["artifacts"] if x.get("front"))
     print(f"skills={len(inv['skills'])} agents={len(inv['agents'])} mcp={len(inv['mcp_servers'])} "
           f"unused={len(inv['unused'])} base_context_est={inv['base_context_est']} "
-          f"artifacts={len(art['artifacts'])}")
+          f"artifacts={len(art['artifacts'])} fronts={fronts}")
 
 
 if __name__ == "__main__":
