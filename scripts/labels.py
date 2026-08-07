@@ -1,7 +1,11 @@
 """Validate the sample-labeler's output and persist per-category correction
 counts to the metrics trend. Labels attribute correction movement to specific
 behavior categories — the per-rule attribution a global correction_rate can't
-give. Invalid labels are dropped and counted, never guessed."""
+give. Invalid labels are dropped and counted, never guessed.
+
+Taxonomy v2 adapts MAST (Cemri et al., "Why Do Multi-Agent LLM Systems Fail?",
+arXiv:2503.13657) to single-agent tool use. Full mode-by-mode mapping and the
+old-taxonomy migration rationale: agents/taxonomy-v2-mast-mapping.md."""
 import argparse
 import json
 from pathlib import Path
@@ -9,8 +13,45 @@ from pathlib import Path
 import inventory as inventory_mod
 import synth as synth_mod
 
-CATEGORIES = ("scope-creep", "wrong-target", "over-engineering", "verbosity",
-              "style", "wrong-assumption", "premature-action", "other")
+# 14 MAST failure modes adapted to single-agent tool use, plus "other" — a
+# catch-all MAST's exhaustive-by-construction taxonomy doesn't need but a
+# real correction stream does.
+CATEGORIES = (
+    "spec-violation", "role-violation", "step-repetition", "context-loss",
+    "no-stop-condition", "plan-reset", "no-clarification", "scope-creep",
+    "info-withholding", "ignored-input", "reasoning-action-mismatch",
+    "premature-termination", "no-verification", "incorrect-verification",
+    "other",
+)
+
+# Static v1 (pre-MAST) -> v2 migration so historical metrics.jsonl rows render
+# under today's names instead of the trend resetting to zero. Several v1
+# categories collapse into one v2 category (MAST doesn't distinguish
+# "assumed" from "acted without asking" the way the old set implied it did);
+# migrate_categories sums counts on collision. See
+# agents/taxonomy-v2-mast-mapping.md for the per-row rationale.
+LEGACY_CATEGORY_MAP = {
+    "scope-creep": "scope-creep",
+    "wrong-target": "spec-violation",
+    "over-engineering": "spec-violation",
+    "verbosity": "no-stop-condition",
+    "style": "role-violation",
+    "wrong-assumption": "no-clarification",
+    "premature-action": "no-clarification",
+    "other": "other",
+}
+
+
+def migrate_categories(counts: dict) -> dict:
+    """Fold a corrections_by_category dict keyed by v1 names into v2 names,
+    summing counts that land on the same v2 category. A key already in v2's
+    vocabulary (or any key the map doesn't recognize) passes through as-is,
+    so this is safe to apply to both old and new rows alike."""
+    out = {}
+    for k, v in (counts or {}).items():
+        nk = LEGACY_CATEGORY_MAP.get(k, k)
+        out[nk] = out.get(nk, 0) + v
+    return out
 
 
 def validate_labels(raw: list, n_samples: int):
