@@ -4,13 +4,22 @@ Everything downstream of collection (analysts, synth, report, ledger, verify, gy
 consumes ONLY these JSON files. Supporting another harness = writing one collector that
 emits them. Every file carries `schema_version: "1"` and `harness`.
 
+One `collect.py` run covers every installed harness. It walks the Claude Code corpus
+itself, runs each discovered adapter as a subprocess into `EV/harness/<name>/`, and merges
+those packs into the canonical top-level files. The merge is deterministic (harnesses fold
+in sorted-name order) and idempotent (same inputs, same bytes). Every session, sample, and
+working row gains a `harness` field naming where it came from; that field is additive, so
+analysts, synth, and the gym read a merged pack unchanged. The doc-level `harness` stamp
+still names the collector that wrote the file (`claude-code`), and `usage.per_harness` is
+the per-harness breakdown.
+
 | file | shape |
 |---|---|
-| sessions.json | `{sessions:[{id, project, cwd, harness_version, started_at, ended_at, turns, input_tokens, output_tokens, cache_read, cache_write, sidechain_output_tokens, models:{<model_id>:{input,output}}, corrections_count, duplicate_reads, repeated_calls, permission_stalls, revert_events, reasks, ended_on_correction, redactions, activation:{"skill:<name>"\|"agent:<name>"\|…:count}}]}` — `activation` is the same id space as activation.json but scoped to that one session, which is what lets the gym attach a case to the artifacts that were actually live; adapters that cannot attribute activation per session omit it |
-| usage.json | `{window:{since,until}, totals:{sessions,turns,input_tokens,output_tokens,cache_read,cache_write}, per_project:{p:{sessions,output_tokens}}, per_model:{m:{input,output,sessions}}, corrections_by_model:{m:count}, waste:{duplicate_reads_total,repeated_calls_total,permission_stalls_total,main_model_heavy_sessions,revert_events_total,reasks_total,ended_on_correction_total,top_duplicate_read_paths,top_stalled_tools,stall_examples}, corrections:{total,rate_per_session}, parse:{skipped_lines,files,redactions, collector_limits?}}` — adapters that cannot supply a field emit it zeroed/empty and say so in `parse.collector_limits` |
+| sessions.json | `{sessions:[{id, project, cwd, harness_version, started_at, ended_at, turns, input_tokens, output_tokens, cache_read, cache_write, sidechain_output_tokens, models:{<model_id>:{input,output}}, corrections_count, duplicate_reads, repeated_calls, permission_stalls, revert_events, reasks, ended_on_correction, redactions, harness, activation:{"skill:<name>"\|"agent:<name>"\|…:count}}]}` — `harness` names the collector the row came from; `activation` is the same id space as activation.json but scoped to that one session, which is what lets the gym attach a case to the artifacts that were actually live; adapters that cannot attribute activation per session omit it |
+| usage.json | `{window:{since,until}, totals:{sessions,turns,input_tokens,output_tokens,cache_read,cache_write}, per_project:{p:{sessions,output_tokens}}, per_model:{m:{input,output,sessions}}, corrections_by_model:{m:count}, waste:{duplicate_reads_total,repeated_calls_total,permission_stalls_total,main_model_heavy_sessions,revert_events_total,reasks_total,ended_on_correction_total,top_duplicate_read_paths,top_stalled_tools,stall_examples}, corrections:{total,rate_per_session}, parse:{skipped_lines,files,redactions, collector_limits?}, per_harness:{<name>:{status:"ok"\|"failed", sessions, corrections, samples, error?}}}` — adapters that cannot supply a field emit it zeroed/empty and say so in `parse.collector_limits`; on a merged pack every numeric field is the sum across harnesses, `collector_limits` entries are prefixed with the harness that declared them, and `per_harness` carries the breakdown plus any harness that failed this run |
 | activation.json | `{items:{"skill:<name>"|"agent:<name>"|"mcp:<server>"|"mcp_tool:<tool>"|"plugin:<id>":{count,last_used,projects}}}` |
-| samples.json | `{samples:[{session,project,ts,kind:"correction",pattern,user_text,prior_assistant_text}]}` — all text pre-redacted |
-| working.json | `{samples:[{session, project, ts, kind:"working", user_text, assistant_text}]}` — ask/answer excerpts (≤2 per session, pre-redacted) from sessions that drew NO correction, the "it worked" counterpart to samples.json. Gym input only: no analyst reads it, so it does not consume the analyst token budget |
+| samples.json | `{samples:[{session,project,ts,kind:"correction",pattern,user_text,prior_assistant_text,harness}]}` — all text pre-redacted; the sample caps apply to the merged pool, split across harnesses in proportion to their session counts with a floor of one, so a chatty harness cannot crowd a quiet one out |
+| working.json | `{samples:[{session, project, ts, kind:"working", user_text, assistant_text, harness}]}` — ask/answer excerpts (≤2 per session, pre-redacted) from sessions that drew NO correction, the "it worked" counterpart to samples.json. Gym input only: no analyst reads it, so it does not consume the analyst token budget |
 | inventory.json | harness-specific config surface (Claude Code: plugins/skills/agents/mcp_servers/claude_md/hooks/guidance/settings-allowlist/available_plugins/base_context_est/unused/rare) — `metadata` is opaque to the portable core; `hooks` is `[{id, source, est_context_tokens}]` from settings.json's `hooks` block plus each enabled plugin's hook file(s); `guidance` is `[{id:"guidance:<path>", path, kind:"claude_md" or "memory", bytes, est_tokens, mtime, body}]` — the global CLAUDE.md plus auto-memory notes, bodies capped and redaction-scrubbed, for the guidance-debt audit |
 | artifacts.json | `{artifacts:[{id, kind:"skill" or "agent", source, path, activation_count, symlinked, body}]}` — the ≤10 most-activated user-owned skills + any-source agents, bodies truncated to 8000 chars; `symlinked` is true when the file or a parent dir (≤3 levels) is a symlink |
 | constraints.json | `{rejected:[{title, reason, ts}]}` — last 20 rejected ledger entries; feeds the analysts' standing-constraints instruction |
@@ -39,3 +48,18 @@ adapter). Additional collectors emitting this same shape: `adapters/codex/`
 (Codex CLI threads DB + config surface), `adapters/claude_chat/` (claude.ai
 data export), and `adapters/opencode/` (opencode's `opencode.db` SQLite store
 + config surface) — all evidence-only, gaps declared in `parse.collector_limits`.
+
+Harness discovery probes the default data roots — the Claude config dir, `~/.codex`,
+`~/.local/share/opencode` — and runs the adapter for each root that exists. The defaults
+live in `so_config.HARNESS_DEFAULTS` and nowhere else; `config.json` overrides them:
+
+    "harnesses": {"codex": {"home": "/opt/codex"}, "opencode": {"enabled": false}}
+
+A harness block replaces the default block one level deep, so a missing key falls back to
+its default and a missing `"enabled"` still means enabled — you turn a harness off by
+writing `"enabled": false`. `adapters/claude_chat/` is not discovered: the claude.ai export
+is a file you produce by hand, so it stays a manual adapter run.
+
+One adapter crashing marks that harness `failed` in `usage.per_harness`, prints the reason
+on stderr, and leaves the rest of the run intact; `collect.py` exits non-zero only when
+every harness failed.
