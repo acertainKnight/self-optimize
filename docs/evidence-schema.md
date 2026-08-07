@@ -24,7 +24,8 @@ the per-harness breakdown.
 | artifacts.json | `{artifacts:[{id, kind:"skill" or "agent", source, path, activation_count, symlinked, body, front?}]}` — the ≤10 most-activated user-owned skills + any-source agents, bodies truncated to 8000 chars; `symlinked` is true when the file or a parent dir (≤3 levels) is a symlink. `front` is present only for an artifact with at least `gym.front.min_failure_cases` recorded failure cases AND two or more scored versions in its archive: `{failure_cases, trade_off, members:[{variant, parent, run_id, prevented:{n,of,rate}, preserved:{n,of,rate}, ops:[{op,anchor,text}], title, expected_improvement}]}` — the Pareto front over both score sides, at most `gym.front.max_members` versions, extremes kept |
 | constraints.json | `{rejected:[{title, reason, ts}]}` — last 20 rejected ledger entries; feeds the analysts' standing-constraints instruction |
 | papercuts.json | `{lines:[{id, date, harness, text}]}` — the live (unarchived) lines of the papercut file named by `papercuts_path` in config.json (default `$HOME/papercuts.md`; see README's Papercut channel), read once per run at the merged level since the file isn't tied to any one harness; `id` is a content hash of the raw line, stable across runs so a citation keeps resolving as later lines are appended; `text` is redaction-scrubbed; a missing file reads as `{lines: []}`, never an error |
-| findings.json | `{findings:[rec + id + evidence_hash + delta_tokens + deep_localize?], dropped:{invalid,citations,guard,suppressed,citation_detail:[{analyst,title,failed_refs}]}}` — `citation_detail` drives the runner's single citation-retry round; `deep_localize` (optional) is synth.py's attachment of any matching localize.json rows, advisory supporting evidence, never a finding category of its own |
+| findings.json | `{findings:[rec + id + evidence_hash + delta_tokens + deep_localize? + enforcement?], dropped:{invalid,citations,guard,suppressed,citation_detail:[{analyst,title,failed_refs}]}}` — `citation_detail` drives the runner's single citation-retry round; `deep_localize` (optional) is synth.py's attachment of any matching localize.json rows, advisory supporting evidence, never a finding category of its own; `enforcement` (optional) is the runtime check a durable correction proposes — see below |
+| verify.json (verify step output) | `{rows:[per-applied-rec metric verdicts], enforcement:[{id, title, category, predicted, adopted_at, baseline_run, observed_run, baseline:{count,total,share}, observed:{count,total,share}, rel_change, verdict, note}]}` — `rows` is the metric verification report.py and dashboard.py render as "Applied changes: outcomes"; `enforcement` is the predicted-vs-observed scoring of every adopted enforcement proposal, recomputed every run and never written back as a ledger status |
 | localize.json (LLM step output) | `{<session-id>:{bracket:[lo,hi], turns_total, calls, rationale, errors, friction_score}}` — `scripts/localize.py`'s bisection of the top-N friction sessions (`deep_localize.enabled` in config, off by default) against the raw transcript with the gym's judge backend; synth.py matches session/sample evidence_refs to attach the row onto findings.deep_localize |
 | labels.json (LLM step output) | written by the runner from the sample-labeler agent, then normalized by `scripts/labels.py` to `{counts:{<category>:n}, dropped:n}`; validated categories only, per-category counts land in metrics.jsonl as `corrections_by_category` |
 | shadow.json (LLM step output) | `{<finding-id>:{prevented,total}}` — judge verdicts on evolver rewrites vs their motivating correction samples; rendered on the finding, never an auto-gate |
@@ -42,6 +43,29 @@ the per-harness breakdown.
 `inventory.json`'s `available_plugins` is a guarded parse of the local plugin catalog
 cache (`<data_root>/plugins/plugin-catalog-cache.json`), installed plugins excluded;
 any shape drift in that cache degrades to an empty list rather than failing collection.
+
+## Enforcement payload
+
+A finding built from a durable correction — the same correction given in two or more
+different sessions — may carry an optional `enforcement` object next to its `action`:
+
+    "enforcement": {"kind": "hook"|"check",
+                    "rule": "<name from enforcement.RULES>",
+                    "params": {…exactly that rule's parameters…},
+                    "prediction": {"category": "<correction category>", "direction": "down"}}
+
+The rule table lives in `scripts/enforcement.py` and the check's logic lives in
+`hooks/enforce.py`; the event, the matcher and the command are rendered from the table,
+so an analyst supplies a rule name and its parameters and never any shell. Carrying this
+payload pins the finding to tier B and to a `manual` action permanently
+(`schema.validate_rec`), and `apply.py` refuses to machine-apply it whatever its tier
+says. A human installs the check and records that with `self-optimize adopt <id>`, which
+appends a ledger entry with status `adopted` plus `enforcement_baseline`
+`{run_id, counts}` — the labeled correction counts as they stood at installation.
+`adopted` is terminal: the entry keeps that status so `verify.py` can re-score its
+prediction on every later run, and `ledger.suppress_reason` stops it being re-proposed.
+Rejecting one instead is an ordinary rejection, so it flows into `constraints.json` and
+the analysts do not raise it again without new evidence.
 
 Recommendation objects and evidence-ref grammar are defined in `scripts/schema.py`
 and the analyst agent definitions. Portable analyzers: transcript-miner and

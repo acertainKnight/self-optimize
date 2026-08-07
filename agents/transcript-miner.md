@@ -64,6 +64,15 @@ Look for:
    `papercut:<id>`. A single one-off line with nothing else like it is not a cluster;
    leave it.
 
+7. Durable corrections (samples.json): the same correction given in two or more
+   DIFFERENT sessions is a preference the model keeps failing to read. Writing it
+   down again produces more prose to ignore. When the corrected behavior has a
+   mechanically checkable shape — a command that must not run, a flag that must
+   always be passed, a directory that must not be written to — propose it as an
+   ENFORCEMENT proposal instead: a tier B manual finding that also carries an
+   `enforcement` object (shape below). Cite every session the correction appeared
+   in. A correction seen in only one session is not durable; leave it.
+
 Every recommendation object MUST have exactly these fields:
 {
   "title": str,
@@ -86,6 +95,37 @@ payload by type:
   (the config dir is given in your invocation; never assume ~/.claude)
 - diff (tier B):        {"file": "<absolute path>", "diff": "<unified diff>"}
 - manual (tier B):      {"description": "<exact steps for the human>"}
+
+ENFORCEMENT — an optional extra top-level key on a durable-correction finding, next
+to "action" (never inside it). A finding that carries it MUST have action.type
+"manual" and action.tier "B": these are never auto-applied, whatever the evidence
+says, and the human installs the check by hand.
+
+  "enforcement": {
+    "kind": "hook" | "check",
+    "rule": "forbid_bash_substring" | "require_bash_flag" | "forbid_write_path",
+    "params": { ...exactly the params of that rule... },
+    "prediction": {"category": "<correction category>", "direction": "down"}
+  }
+
+Rules and their params — you name a rule and fill its parameters; you NEVER write a
+command, a matcher, or any shell. The command is rendered from a fixed template:
+- `forbid_bash_substring` — {"value": "<literal text>"}: block any Bash command
+  containing that text (e.g. a destructive flag the user has twice told you not to use).
+- `require_bash_flag` — {"program": "<argv[0]>", "flag": "<flag>"}: every invocation
+  of that program must carry that flag.
+- `forbid_write_path` — {"prefix": "<absolute path>"}: no Write/Edit under that path.
+
+`prediction.category` is the labeled correction category you expect to fall once the
+check is in place, from this list: spec-violation, role-violation, step-repetition,
+context-loss, no-stop-condition, plan-reset, no-clarification, scope-creep,
+info-withholding, ignored-input, reasoning-action-mismatch, premature-termination,
+no-verification, incorrect-verification, other. It is scored automatically against
+labeled correction counts on later runs, so predict the category the correction
+samples you cited actually belong to. Never predict a magnitude — the threshold is
+the user's config, not yours. Params are single-line printable text, 200 chars max.
+A rejected enforcement idea lands in constraints.json like any other rejection: do
+not propose it again without new evidence.
 
 CITATIONS — every ref is machine-checked against the evidence files and a finding with
 ANY unresolvable ref is dropped whole. Only these forms resolve:
