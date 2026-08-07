@@ -84,10 +84,15 @@ def cmd_apply(ids, state, data_root, evidence):
             # OSError: the diff branch's render-time target.read_text() can hit a
             # directory named CLAUDE.md or an unreadable file — fail just this rec,
             # not the whole batch.
+            # ValueError is the renderer's DELIBERATE refusal (anchor missed, path
+            # outside the sanctioned roots, diff didn't apply) and already says why —
+            # calling that a malformed payload would misreport a working guard. The
+            # other classes really are payload damage.
+            reason = str(err) if isinstance(err, ValueError) else f"malformed payload: {err}"
             ledger_mod.append(lpath, {"id": rid, "status": "apply_failed",
-                                      "errors": [f"malformed payload: {err}"],
+                                      "errors": [reason],
                                       "evidence_hash": e.get("evidence_hash")})
-            print(f"{rid}: refused by policy — malformed payload: {err}")
+            print(f"{rid}: refused by policy — {reason}")
             continue
         # UTC timestamp (not local date): same-day re-applies must not share a dir,
         # or the second apply would overwrite the true pre-state snapshot

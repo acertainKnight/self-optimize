@@ -414,6 +414,131 @@ class TestScoring(GymCase):
         self.assertEqual(written["candidate"], str(self.good))
 
 
+class TestGate(GymCase):
+    """The gate is what stands between an evolver proposal and a one-click apply:
+    score the candidate the user would actually get, and downgrade anything it could
+    not score to tier B."""
+
+    ARTIFACT = "# alpha\n- always run the KEYWORD check\n- then ship\n"
+
+    def setUp(self):
+        super().setUp()
+        self.stub = self.tmp / "stub_judge.py"
+        self.stub.write_text(STUB_JUDGE)
+        self.artifact = self.tmp / "SKILL.md"
+        self.artifact.write_text(self.ARTIFACT)
+        ev = write_pack(
+            self.tmp / "ev", skills=("alpha",),
+            sessions=[session("f", ["skill:alpha"], corrections=4),
+                      session("w", ["skill:alpha"], corrections=0)],
+            samples=[correction("f", i) for i in range(1, 5)],
+            working=[working_row("w", i) for i in range(1, 5)])
+        gym.accrue(self.state, [ev], "2026-06-01", self.cfg)
+        self.findings = self.tmp / "findings.json"
+
+    def with_judge(self):
+        cfg = json.loads(json.dumps(self.cfg))
+        cfg["gym"]["judge"] = {"command": [sys.executable, str(self.stub)],
+                               "model": "stub-model", "timeout_s": 30}
+        return cfg
+
+    def ops_finding(self, ops, fid="f1"):
+        return {"id": fid, "title": "Sharpen alpha", "category": "skill-improve",
+                "evidence_refs": ["artifact:skill:alpha", "sample:0"],
+                "impact": {"ordinal": "med"}, "risk": "low",
+                "metric": {"key": "correction_rate", "direction": "down", "scope": "global"},
+                "action": {"harness": "claude-code", "tier": "A", "type": "file_ops",
+                           "payload": {"path": str(self.artifact), "ops": ops}}}
+
+    def write_findings(self, findings):
+        self.findings.write_text(json.dumps({"findings": findings, "dropped": {}}))
+
+    def run_gate(self, cfg=None):
+        return gym.gate(self.state, self.findings, cfg or self.with_judge(), run_id="r1")
+
+    def reloaded(self):
+        return json.loads(self.findings.read_text())["findings"]
+
+    def test_scores_the_artifact_as_the_ops_would_leave_it(self):
+        keep = self.ops_finding([{"op": "add", "anchor": "- then ship",
+                                  "text": "- read the diff first",
+                                  "motivated_by": ["sample:0"]}])
+        self.write_findings([keep])
+        summary = self.run_gate()
+        score = summary["scores"]["f1"]
+        self.assertFalse(score["unscorable"])
+        self.assertEqual(score["prevented"], {"n": 4, "of": 4})
+        self.assertEqual(score["preserved"], {"n": 4, "of": 4})
+        self.assertEqual(summary["downgraded"], [])
+        self.assertEqual(self.reloaded()[0]["action"]["tier"], "A")
+        # the judged text is the current artifact with the op applied, not the payload
+        self.assertEqual(gym.candidate_text(keep)[0],
+                         "# alpha\n- always run the KEYWORD check\n- then ship\n"
+                         "- read the diff first\n")
+
+    def test_ops_that_no_longer_anchor_are_unscorable_and_tier_b(self):
+        self.write_findings([self.ops_finding([{"op": "delete", "anchor": "- gone from the file",
+                                                "motivated_by": ["sample:0"]}])])
+        summary = self.run_gate()
+        self.assertIn("anchor not found", summary["scores"]["f1"]["reason"])
+        self.assertEqual(summary["downgraded"], ["f1"])
+        self.assertEqual(self.reloaded()[0]["action"]["tier"], "B")
+
+    def test_unregistered_artifact_is_unscorable_and_tier_b(self):
+        unknown = self.ops_finding([{"op": "delete", "anchor": "- then ship",
+                                     "motivated_by": ["sample:0"]}])
+        unknown["evidence_refs"] = ["artifact:skill:ghost"]   # not in the registry
+        self.write_findings([unknown])
+        summary = self.run_gate()
+        self.assertIn("no registered gym artifact", summary["scores"]["f1"]["reason"])
+        self.assertEqual(self.reloaded()[0]["action"]["tier"], "B")
+
+    def test_no_judge_configured_leaves_everything_at_tier_b(self):
+        self.write_findings([self.ops_finding([{"op": "delete", "anchor": "- then ship",
+                                                "motivated_by": ["sample:0"]}])])
+        summary = self.run_gate(cfg=self.cfg)   # no gym.judge.command
+        self.assertTrue(summary["judge_missing"])
+        self.assertIn("gym.judge.command", summary["scores"]["f1"]["reason"])
+        self.assertEqual(self.reloaded()[0]["action"]["tier"], "B")
+
+    def test_symlinked_artifact_diff_is_not_treated_as_a_candidate(self):
+        diff = self.ops_finding([], fid="d1")
+        diff["action"] = {"harness": "claude-code", "tier": "B", "type": "diff",
+                          "payload": {"file": str(self.artifact), "diff": "@@ -1 +1 @@\n-a\n+b\n"}}
+        self.write_findings([diff])
+        summary = self.run_gate()
+        self.assertEqual(summary["scores"], {})
+        self.assertEqual(self.reloaded()[0]["action"]["tier"], "B")
+
+    def test_non_evolver_findings_are_left_alone(self):
+        other = {"id": "b1", "title": "Disable dusty", "category": "bloat",
+                 "evidence_refs": ["inventory:skill:dusty"], "impact": {"ordinal": "med"},
+                 "risk": "low", "metric": {"key": "base_context_est", "direction": "down"},
+                 "action": {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                            "payload": {"key_path": ["skillOverrides", "dusty"], "value": "off"}}}
+        self.write_findings([other])
+        summary = self.run_gate()
+        self.assertEqual(summary["scores"], {})
+        self.assertEqual(self.reloaded()[0]["action"]["tier"], "A")
+
+    def test_cli_writes_scores_at_mode_600(self):
+        cfgfile = self.state / "config.json"
+        cfg = json.loads(cfgfile.read_text())
+        cfg["gym"]["judge"] = {"command": [sys.executable, str(self.stub)],
+                               "model": "stub-model", "timeout_s": 30}
+        cfgfile.write_text(json.dumps(cfg))
+        self.write_findings([self.ops_finding([{"op": "delete", "anchor": "- then ship",
+                                                "motivated_by": ["sample:0"]}])])
+        out = self.tmp / "gym.json"
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            gym.main(["gate", "--findings", str(self.findings), "--state", str(self.state),
+                      "--out", str(out)])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+        self.assertIn("f1", json.loads(out.read_text()))
+
+
 class TestVerdictParsing(unittest.TestCase):
     def test_bare_json(self):
         self.assertTrue(gym.parse_verdict('{"prevented": true}', "failure"))

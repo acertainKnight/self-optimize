@@ -831,3 +831,78 @@ class TestDiffRenderOSError(unittest.TestCase):
         apply_mod.cmd_apply(["d1"], state, data, ev)   # must not raise
         self.assertEqual(ledger.load(lp)["d1"]["status"], "apply_failed")
         tmp.cleanup()
+
+
+class TestFileOpsApply(unittest.TestCase):
+    BODY = "---\nname: helper\nmodel: sonnet\n---\n# helper\n- run the tests\n- ship it\n"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = pathlib.Path(self.tmp.name)
+        self.state, self.data, self.ev = base / "state", base / "claude", base / "ev"
+        for d in (self.state, self.data, self.ev):
+            d.mkdir()
+        (self.data / "agents").mkdir()
+        self.agent = self.data / "agents" / "helper.md"
+        self.agent.write_bytes(self.BODY.encode())
+        (self.ev / "sessions.json").write_text(json.dumps(
+            {"sessions": [{"started_at": "2026-06-01", "corrections_count": 2,
+                           "input_tokens": 1, "output_tokens": 1}]}))
+        self.lpath = self.state / "state" / "ledger.jsonl"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def propose(self, rid, ops):
+        rec = setting_rec()
+        rec["category"] = "skill-improve"
+        rec["action"] = {"harness": "claude-code", "tier": "A", "type": "file_ops",
+                         "payload": {"path": str(self.agent), "ops": ops}}
+        ledger.append(self.lpath, {"id": rid, "status": "proposed", "rec": rec,
+                                   "evidence_hash": "e"})
+
+    def snapshots(self, rid):
+        root = self.state / "state" / "snapshots"
+        return list(root.rglob(rid)) if root.exists() else []
+
+    def test_apply_then_rollback_restores_bytes_exactly(self):
+        original = self.agent.read_bytes()
+        self.propose("o1", [{"op": "replace", "anchor": "- run the tests",
+                             "text": "- run the whole suite",
+                             "motivated_by": ["sample:0"]}])
+        apply_mod.cmd_apply(["o1"], self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["o1"]["status"], "applied")
+        self.assertIn("- run the whole suite", self.agent.read_text())
+        self.assertNotIn("- run the tests", self.agent.read_text())
+        apply_mod.cmd_rollback("o1", self.state)
+        self.assertEqual(self.agent.read_bytes(), original)
+        self.assertEqual(ledger.load(self.lpath)["o1"]["status"], "rolled_back")
+
+    def test_ambiguous_anchor_refuses_with_no_snapshot_and_no_write(self):
+        self.agent.write_bytes((self.BODY + "- ship it\n").encode())
+        original = self.agent.read_bytes()
+        self.propose("o2", [{"op": "delete", "anchor": "- ship it",
+                             "motivated_by": ["sample:0"]}])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            apply_mod.cmd_apply(["o2"], self.state, self.data, self.ev)
+        e = ledger.load(self.lpath)["o2"]
+        self.assertEqual(e["status"], "apply_failed")
+        self.assertTrue(any("ambiguous anchor" in x for x in e["errors"]), e["errors"])
+        self.assertIn("refused by policy", buf.getvalue())
+        self.assertEqual(self.agent.read_bytes(), original)
+        self.assertEqual(self.snapshots("o2"), [])
+
+    def test_reapplying_an_applied_op_set_refuses(self):
+        ops = [{"op": "add", "anchor": "- ship it", "text": "- and tell someone",
+                "motivated_by": ["sample:0"]}]
+        self.propose("o3", ops)
+        apply_mod.cmd_apply(["o3"], self.state, self.data, self.ev)
+        applied = self.agent.read_bytes()
+        self.propose("o4", ops)   # same edit proposed again in a later run
+        apply_mod.cmd_apply(["o4"], self.state, self.data, self.ev)
+        e = ledger.load(self.lpath)["o4"]
+        self.assertEqual(e["status"], "apply_failed")
+        self.assertTrue(any("already applied" in x for x in e["errors"]), e["errors"])
+        self.assertEqual(self.agent.read_bytes(), applied)   # not edited twice
+        self.assertEqual(self.snapshots("o4"), [])
