@@ -13,6 +13,7 @@
     {"id": "ptc-reduction", "status": "unverified", "claim": "Programmatic tool calling ~37% context reduction in Anthropic's example (43.6k -> 27.3k)", "sources": [], "feeds": ["config-auditor"]},
     {"id": "mcp-upfront-cost", "status": "unverified", "claim": "A 5-server MCP setup costs ~55k tokens up front without deferral", "sources": [], "feeds": ["config-auditor"]},
     {"id": "haiku-cost-ratio", "status": "unverified", "claim": "Haiku ~15x cheaper than Opus; simple subagent tasks reportedly equivalent on Haiku", "sources": [], "feeds": ["config-auditor"]},
-    {"id": "enable-tool-search-env", "status": "unverified", "claim": "ENABLE_TOOL_SEARCH is undocumented in official docs as of 2026-07-01; never recommend changing it firmly", "sources": [], "feeds": ["config-auditor"]}
+    {"id": "enable-tool-search-env", "status": "unverified", "claim": "ENABLE_TOOL_SEARCH is undocumented in official docs as of 2026-07-01; never recommend changing it firmly", "sources": [], "feeds": ["config-auditor"]},
+    {"id": "bounded-artifact-edits", "status": "verified", "claim": "Repeated whole-artifact rewrites degrade an instruction file over successive passes (context collapse); prefer an ordered set of add/delete/replace edits anchored on exact existing lines, each carrying its own evidence, with a full rewrite as an explicitly-marked exception", "sources": ["https://arxiv.org/abs/2510.04618"], "feeds": ["evolver"]}
   ]
 }

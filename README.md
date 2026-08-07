@@ -122,6 +122,14 @@ Merged on `main` and working:
   whether the rewritten artifact would have prevented it. The score renders on the
   finding as evidence for your decision. It is not an auto-gate, and it only covers
   failure cases — the "did it preserve working behavior" half is what the gym adds.
+- Bounded artifact edits: the evolver proposes an ordered set of add / delete / replace
+  operations, each anchored on one exact line of the artifact and each carrying its own
+  evidence, instead of a whole-file rewrite. Applying them is fail-closed — an anchor
+  that matches no line, or more than one, refuses the whole set, and re-applying a set
+  that already landed refuses too. Before the proposal renders, the gym scores the file
+  as those edits would leave it; anything it cannot score drops to tier B for you to
+  read. A structural rewrite is still possible, but it has to say so and it is never
+  tier A.
 - Markdown report plus a self-contained HTML dashboard, per-item apply / reject / amend /
   assist, a durable decision record, snapshot-backed applies with a post-write smoke
   check and auto-restore, and one-command rollback.
