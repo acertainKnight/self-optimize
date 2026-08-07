@@ -875,6 +875,96 @@ class TestDiffRenderOSError(unittest.TestCase):
         tmp.cleanup()
 
 
+class TestNonClaudeSurfaceApply(unittest.TestCase):
+    TOML = ('# top-level model choice\n'
+            'model = "gpt-5"  # active model\n'
+            '\n[features]\nweb_search = false  # toggle\n')
+    JSONC = ('{\n  // model config\n  "model": "anthropic/claude",\n  "mcp": {}\n}\n')
+    AGENTS = "# Agent notes\n\n- keep responses short\n- cite sources\n"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = pathlib.Path(self.tmp.name)
+        self.state, self.data, self.ev = base / "state", base / "claude", base / "ev"
+        self.codex_home, self.opencode_config = base / "codex", base / "opencode-config"
+        for d in (self.state, self.data, self.ev, self.codex_home, self.opencode_config):
+            d.mkdir()
+        (self.data / "settings.json").write_text("{}")
+        (self.ev / "sessions.json").write_text(json.dumps(
+            {"sessions": [{"started_at": "2026-06-01", "corrections_count": 1,
+                           "input_tokens": 1, "output_tokens": 1}]}))
+        (self.state / "config.json").write_text(json.dumps({
+            "harnesses": {"codex": {"home": str(self.codex_home)},
+                          "opencode": {"config": str(self.opencode_config)}}}))
+        (self.codex_home / "config.toml").write_text(self.TOML)
+        (self.opencode_config / "opencode.jsonc").write_text(self.JSONC)
+        (self.opencode_config / "AGENTS.md").write_text(self.AGENTS)
+        self.lpath = self.state / "state" / "ledger.jsonl"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _propose(self, rid, action):
+        rec = setting_rec()
+        rec["action"] = action
+        ledger.append(self.lpath, {"id": rid, "status": "proposed", "rec": rec,
+                                   "evidence_hash": "e"})
+
+    def test_toml_key_edit_apply_then_rollback_byte_exact(self):
+        target = self.codex_home / "config.toml"
+        original = target.read_bytes()
+        self._propose("t1", {"harness": "codex", "tier": "B", "type": "toml_key_edit",
+                             "payload": {"key_path": ["features", "web_search"], "value": True}})
+        apply_mod.cmd_apply(["t1"], self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["t1"]["status"], "applied")
+        applied_text = target.read_text()
+        self.assertIn("web_search = true  # toggle", applied_text)
+        self.assertIn('model = "gpt-5"  # active model', applied_text)   # untouched line
+        apply_mod.cmd_rollback("t1", self.state)
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(ledger.load(self.lpath)["t1"]["status"], "rolled_back")
+
+    def test_toml_non_allowlisted_key_refused(self):
+        original = (self.codex_home / "config.toml").read_bytes()
+        self._propose("t2", {"harness": "codex", "tier": "B", "type": "toml_key_edit",
+                             "payload": {"key_path": ["approval_policy"], "value": "never"}})
+        apply_mod.cmd_apply(["t2"], self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["t2"]["status"], "apply_failed")
+        self.assertEqual((self.codex_home / "config.toml").read_bytes(), original)
+
+    def test_jsonc_ops_apply_then_rollback_byte_exact(self):
+        target = self.opencode_config / "opencode.jsonc"
+        original = target.read_bytes()
+        self._propose("j1", {"harness": "opencode", "tier": "B", "type": "jsonc_ops",
+                             "payload": {"ops": [{"op": "replace",
+                                                  "anchor": '  "model": "anthropic/claude",',
+                                                  "text": '  "model": "anthropic/claude-new",',
+                                                  "motivated_by": ["sample:0"]}]}})
+        apply_mod.cmd_apply(["j1"], self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["j1"]["status"], "applied")
+        applied_text = target.read_text()
+        self.assertIn("claude-new", applied_text)
+        self.assertIn("// model config", applied_text)
+        apply_mod.cmd_rollback("j1", self.state)
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(ledger.load(self.lpath)["j1"]["status"], "rolled_back")
+
+    def test_agents_md_ops_apply_then_rollback_byte_exact(self):
+        target = self.opencode_config / "AGENTS.md"
+        original = target.read_bytes()
+        self._propose("a1", {"harness": "opencode", "tier": "B", "type": "agents_md_ops",
+                             "payload": {"harness": "opencode",
+                                         "ops": [{"op": "add", "anchor": "- keep responses short",
+                                                  "text": "- avoid filler",
+                                                  "motivated_by": ["sample:0"]}]}})
+        apply_mod.cmd_apply(["a1"], self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["a1"]["status"], "applied")
+        self.assertIn("avoid filler", target.read_text())
+        apply_mod.cmd_rollback("a1", self.state)
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(ledger.load(self.lpath)["a1"]["status"], "rolled_back")
+
+
 class TestFileOpsApply(unittest.TestCase):
     BODY = "---\nname: helper\nmodel: sonnet\n---\n# helper\n- run the tests\n- ship it\n"
 

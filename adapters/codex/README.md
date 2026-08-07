@@ -30,8 +30,15 @@ Writes `sessions.json`, `usage.json`, `inventory.json`, `samples.json` (chmod 60
 - Unknown top-level rollout record types and malformed lines are counted in
   `usage.parse.skipped_lines`, never fatal — schema drift degrades gracefully
   rather than crashing the collector.
-- Evidence only: there are no Codex apply templates. Recommendations against a
-  Codex config surface are tier-B manual until an allowlisted `config.toml`
-  edit template exists.
 - No runner: Codex has no plugin-agent equivalent; invoke the collector by hand
   or from a prompt in `~/.codex/prompts/`.
+
+## Apply templates
+
+`config.toml` and `AGENTS.md` are both tier-B apply surfaces in
+`adapters/claude_code/templates.py` (`toml_key_edit`, `agents_md_ops`) — a
+recommendation against either renders and applies through the same
+snapshot/rollback flow as the Claude Code templates, human-approved per item.
+`toml_key_edit` only rewrites an already-present key on an allowlisted root
+(`model`, `model_provider`, `profile`, `features.<key>`) and preserves every
+comment and unrelated line; anything else is refused.

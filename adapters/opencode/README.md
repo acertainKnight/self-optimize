@@ -69,5 +69,13 @@ claude.ai-export collectors.
   window for opencode specifically is a real option, but it would diverge
   from the shared, tested convention on a single data point — worth
   revisiting with more installs to look at.
-- Evidence only: there is no opencode apply-template surface, matching the
-  Codex adapter.
+## Apply templates
+
+`opencode.jsonc` and `AGENTS.md` are both tier-B apply surfaces in
+`adapters/claude_code/templates.py` (`jsonc_ops`, `agents_md_ops`) — a
+recommendation against either renders and applies through the same
+snapshot/rollback flow as the Claude Code templates, human-approved per item.
+`jsonc_ops` edits are anchor-matched line edits (same mechanism as file_ops),
+so existing `//` and `/* */` comments and layout survive untouched; the
+result is re-validated against `_strip_jsonc` + `json.loads` before it is
+written, and an edit that would produce invalid JSON is refused.

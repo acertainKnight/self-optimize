@@ -38,6 +38,40 @@ def _restore(meta, snap):
             p.unlink()
 
 
+def _harness_surface_roots(state) -> dict:
+    """Sanctioned write roots for the non-Claude config surfaces templates.py can
+    edit. Codex's config.toml and AGENTS.md live directly in its home dir;
+    opencode's opencode.jsonc and AGENTS.md live in its separate config dir (the
+    session store, opencode.db, lives under its own home dir and is never
+    touched here). A harness missing from config.json (or explicitly disabled)
+    is simply absent from the returned dict — templates.render refuses any
+    action naming it.
+
+    Read-only by design (unlike so_config.load_config, which creates config.json
+    when absent): cmd_apply's own file writes are exactly what it snapshots and
+    can roll back, so nothing on the way there should touch disk first."""
+    import so_config
+    cfg = json.loads(json.dumps(so_config.DEFAULTS))  # deep copy
+    cfg_path = Path(state) / "config.json"
+    if cfg_path.exists():
+        try:
+            overrides = json.loads(cfg_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            overrides = {}
+        for k, v in overrides.items():
+            if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+                cfg[k].update(v)
+            else:
+                cfg[k] = v
+    roots = so_config.harness_roots(cfg)
+    out = {}
+    if "codex" in roots:
+        out["codex"] = roots["codex"]["home"]
+    if "opencode" in roots:
+        out["opencode"] = roots["opencode"]["config"]
+    return out
+
+
 def cmd_apply(ids, state, data_root, evidence):
     ids = list(dict.fromkeys(ids))  # dedupe: in-memory ledger is stale within one run
     state = Path(state)
@@ -51,6 +85,7 @@ def cmd_apply(ids, state, data_root, evidence):
     inv_f = Path(evidence) / "inventory.json"
     inv = json.loads(inv_f.read_text()) if inv_f.exists() else None
     extra_roots = so_schema.derive_extra_roots(inv, data_root)
+    harness_roots = _harness_surface_roots(state)
     # staggered-apply warning: changes sharing a metric are unattributable to verify
     shared = {}
     for rid in ids:
@@ -72,7 +107,7 @@ def cmd_apply(ids, state, data_root, evidence):
             print(f"{rid}: manual action — complete it yourself (see the report)")
             continue
         try:
-            edits = templates.render(rec["action"], Path(data_root), extra_roots)
+            edits = templates.render(rec["action"], Path(data_root), extra_roots, harness_roots)
         except (ValueError, KeyError, TypeError, AttributeError, OSError) as err:
             # KeyError/TypeError/AttributeError alongside ValueError: templates.render
             # indexes payload fields directly (p["value"], p["path"], dict lookups keyed
