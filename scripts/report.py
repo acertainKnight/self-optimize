@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 import ledger as ledger_mod
+import labels as labels_mod
 
 
 def _cell(x) -> str:
@@ -165,8 +166,12 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
             L.append("")
         cat_rows = [t for t in trend_rows if t.get("corrections_by_category")]
         if cat_rows:
-            cur = cat_rows[-1]["corrections_by_category"]
-            prev = cat_rows[-2]["corrections_by_category"] if len(cat_rows) > 1 else {}
+            # migrate_categories folds any pre-taxonomy-v2 rows onto today's
+            # category names so a mid-history migration doesn't read as the
+            # trend resetting to zero.
+            cur = labels_mod.migrate_categories(cat_rows[-1]["corrections_by_category"])
+            prev = labels_mod.migrate_categories(
+                cat_rows[-2]["corrections_by_category"]) if len(cat_rows) > 1 else {}
             parts = []
             for k in sorted(set(cur) | set(prev)):
                 p = f"{k} {cur.get(k, 0)}"
