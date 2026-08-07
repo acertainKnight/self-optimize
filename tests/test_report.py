@@ -63,6 +63,13 @@ class TestReport(unittest.TestCase):
         self.assertIn("not an auto-gate", md)
         self.assertIn("unscorable — below case floor: working 1/3", md)
 
+    def test_deep_localize_renders_as_advisory_line_on_the_finding(self):
+        localized = dict(FINDINGS[0], deep_localize=[{"bracket": [3, 4], "turns_total": 8,
+                                                       "calls": 3, "rationale": "went sideways"}])
+        md = report.render("r", [localized, FINDINGS[1]], DROPPED, [], [], USAGE, {})
+        self.assertIn("deep localize: session went off track around turn 4-5 of 8", md)
+        self.assertIn("went sideways", md)
+
     def test_gym_json_is_optional_and_survives_corruption(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

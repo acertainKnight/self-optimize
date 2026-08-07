@@ -74,6 +74,7 @@ last bullet below), and stop:
    `EV/analyst_tokens.json` (e.g. `{"miner": 8000, "auditor": 4300}`) — report.py
    reads it automatically.
 5. **Synthesize:**
+   **Deep localize (opt-in):** if `deep_localize.enabled` is true in config, run `python3 SCRIPTS/localize.py --evidence EV --data-root DATA_ROOT --state STATE --out EV/localize.json` (add `--max-budget <N>` if the user passed one) BEFORE the synth command below — it bisects the top-N friction sessions with the gym's judge backend and writes bracketed turn ranges + rationale that synth.py then attaches to any finding whose evidence touches that session, as supporting evidence never its own finding category; skip quietly (no file written) if it exits 2 for an unconfigured judge.
    `python3 SCRIPTS/synth.py --evidence EV --data-root DATA_ROOT --state STATE --rules ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json --analyst EV/miner.json --analyst EV/auditor.json [--analyst EV/evolver.json] --out EV/findings.json`
    (include `--analyst EV/evolver.json` only if evolver ran in step 4.)
    **Citation retry (at most ONE round):** if the synth summary shows

@@ -70,6 +70,24 @@ def check_citation(ref: str, ev: dict) -> bool:
     return False
 
 
+def _localize_hits(evidence_refs: list, ev: dict, localized: dict) -> list:
+    """Which of localize.json's per-session bisection results this finding's
+    evidence touches, via a direct session: ref or a sample: ref's session field.
+    Advisory supporting evidence only — never validated as a citation itself."""
+    if not localized:
+        return []
+    ids = set()
+    for r in evidence_refs:
+        kind, _, rest = r.partition(":")
+        if kind == "session":
+            ids.add(rest)
+        elif kind == "sample" and rest.isdigit():
+            samples = ev.get("samples", {}).get("samples") or []
+            if int(rest) < len(samples):
+                ids.add(samples[int(rest)].get("session"))
+    return [localized[sid] for sid in sorted(ids) if sid in localized]
+
+
 def _under(f: str, data_root: Path, sub: str) -> bool:
     # ponytail: lexical normpath, not resolve() — resolve() follows symlinks and
     # would reject legitimately symlinked skills dirs; normpath collapses ".."
@@ -185,6 +203,9 @@ def synthesize(analyst_recs: list, ev: dict, led_entries: dict, data_root: Path,
         if prior and prior.get("status") == "rejected":
             rec["prior_rejection"] = prior.get("reason", "")
         rec["delta_tokens"] = tier1_delta(rec, ev)
+        hits = _localize_hits(rec["evidence_refs"], ev, ev.get("localize") or {})
+        if hits:
+            rec["deep_localize"] = hits
         findings.append(rec)
     findings.sort(key=lambda r: (r["delta_tokens"] is None, -(r["delta_tokens"] or 0),
                                  -ORD.get(r["impact"].get("ordinal", "low"), 1)))
@@ -211,6 +232,8 @@ def main(argv=None):
     ev["artifacts"] = json.loads(art_f.read_text()) if art_f.exists() else {"artifacts": []}
     con_f = evdir / "constraints.json"
     ev["constraints"] = json.loads(con_f.read_text()) if con_f.exists() else {"rejected": []}
+    loc_f = evdir / "localize.json"
+    ev["localize"] = json.loads(loc_f.read_text()) if loc_f.exists() else {}
     ev["rules"] = json.loads(Path(a.rules).read_text())
     lpath = state / "state" / "ledger.jsonl"
     led = ledger_mod.load(lpath)

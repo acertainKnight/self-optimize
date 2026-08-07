@@ -22,6 +22,9 @@ DEFAULTS = {
     "gym": {"min_cases_per_side": 3, "max_cases_per_side": 20,
             "retire_after_absent_runs": 3,
             "judge": {"command": [], "model": "", "timeout_s": 120}},
+    # opt-in, off by default: bisects the top_n highest-friction sessions with
+    # the gym's judge backend to bracket roughly where each went off track.
+    "deep_localize": {"enabled": False, "top_n": 3},
 }
 
 
