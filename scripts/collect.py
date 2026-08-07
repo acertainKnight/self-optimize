@@ -216,7 +216,8 @@ from fnmatch import fnmatch
 import schema as so_schema
 
 
-def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, caps) -> dict:
+def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, caps,
+                   flagged=frozenset()) -> dict:
     counters = {"skipped_lines": 0, "files": 0}
     sessions, act, samples, working, dup_paths, corr_by_model = [], {}, [], [], {}, {}
     stall_tools, stall_examples = Counter(), []
@@ -263,7 +264,7 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
                             "assistant_text": w["assistant_text"]})
         sessions.append(s)
 
-    samples = _cap_samples(samples, sessions, caps)
+    samples = _cap_samples(samples, sessions, caps, flagged)
     n = len(sessions)
     per_project, per_model = {}, {}
     tot = {"sessions": n, "turns": 0, "input_tokens": 0, "output_tokens": 0,
@@ -307,7 +308,7 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
             "activation": {"items": act}, "samples": samples, "working": working}
 
 
-def _cap_samples(samples, sessions, caps):
+def _cap_samples(samples, sessions, caps, flagged=frozenset()):
     per_char = caps["tokens_per_excerpt"] * 4
     total_char = caps["total_tokens"] * 4
     n_sessions = max(len(sessions), 1)
@@ -317,7 +318,14 @@ def _cap_samples(samples, sessions, caps):
     budget_per_project = {p: max(2, round(caps["excerpts"] * c / n_sessions))
                           for p, c in shares.items()}
     out, used_chars, taken = [], 0, {}
-    for smp in sorted(samples, key=lambda x: x["ts"] or "", reverse=True):
+    ordered = sorted(samples, key=lambda x: x["ts"] or "", reverse=True)
+    if flagged:
+        # Second, stable sort: capture-queue-flagged sessions bubble to the
+        # front while the recency order from the first sort survives within
+        # each group. No flags -> ordered is untouched -> identical to the
+        # pre-capture-queue behavior (uninstalling the hook changes nothing).
+        ordered = sorted(ordered, key=lambda x: x["session"] not in flagged)
+    for smp in ordered:
         p = smp["project"]
         if taken.get(p, 0) >= budget_per_project.get(p, 2) or len(out) >= caps["excerpts"]:
             continue
@@ -386,6 +394,61 @@ def constraints_pack(lpath: Path, limit: int = 20) -> dict:
                                  "reason": redact.scrub(str(e.get("reason", "")))[0],
                                  "ts": e.get("ts", "")}
                                 for e in rejected]})
+
+
+def read_capture_queue(path: Path) -> tuple[list, int]:
+    """Reads <state>/capture-queue.jsonl, appended to by the opt-in (never
+    auto-enabled) Stop hook in hooks/capture_trigger.py. A line that isn't a
+    JSON object with a session_id is skipped and counted, never raised — the
+    queue is best-effort pointers, and one bad line must not break collect."""
+    path = Path(path)
+    if not path.exists():
+        return [], 0
+    entries, malformed = [], 0
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            malformed += 1
+            continue
+        if not isinstance(e, dict) or not e.get("session_id"):
+            malformed += 1
+            continue
+        entries.append(e)
+    return entries, malformed
+
+
+def flagged_session_ids(entries: list) -> set:
+    return {e["session_id"] for e in entries if not e.get("consumed")}
+
+
+def mark_queue_consumed(path: Path, consumed_ids: set) -> None:
+    """Marks queue lines for the given session ids as consumed, in place —
+    an audit trail, never a deletion. No-op if the queue is missing or
+    nothing was flagged this run."""
+    path = Path(path)
+    if not consumed_ids or not path.exists():
+        return
+    out = []
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        try:
+            e = json.loads(s)
+        except json.JSONDecodeError:
+            out.append(s)  # malformed lines survive untouched, byte for byte
+            continue
+        if isinstance(e, dict) and e.get("session_id") in consumed_ids and not e.get("consumed"):
+            e["consumed"] = True
+            out.append(json.dumps(e))
+        else:
+            out.append(s)
+    path.write_text("\n".join(out) + "\n")
+    path.chmod(0o600)
 
 
 def write_pack(out_dir: Path, pack: dict, constraints: dict | None = None) -> None:
@@ -458,16 +521,21 @@ def main(argv=None):
         since = (datetime.now(timezone.utc) - timedelta(days=cfg["since_days"])).isoformat()
     budget = a.max_budget if a.max_budget is not None else cfg.get("max_budget_tokens", 0)
     caps = scale_caps_to_budget(cfg["sample_caps"], budget)
+    queue_path = state / "capture-queue.jsonl"
+    queue_entries, queue_malformed = read_capture_queue(queue_path)
+    flagged = flagged_session_ids(queue_entries)
     pack = collect_corpus(data_root, since, cfg["project_include"],
-                          cfg["project_exclude"], correction_re, caps)
+                          cfg["project_exclude"], correction_re, caps, flagged)
     constraints = constraints_pack(state / "state" / "ledger.jsonl")
     write_pack(Path(a.out), pack, constraints)
     append_metrics(state, metrics_row(a.run_id, pack))
+    mark_queue_consumed(queue_path, flagged)
     t = pack["usage"]["totals"]
     print(f"sessions={t['sessions']} corrections={pack['usage']['corrections']['total']} "
           f"dup_reads={pack['usage']['waste']['duplicate_reads_total']} "
           f"stalls={pack['usage']['waste']['permission_stalls_total']} "
-          f"parse_skipped={pack['usage']['parse']['skipped_lines']}")
+          f"parse_skipped={pack['usage']['parse']['skipped_lines']} "
+          f"queue_flagged={len(flagged)} queue_malformed={queue_malformed}")
 
 
 if __name__ == "__main__":
