@@ -99,6 +99,27 @@ def _gym_line(g: dict) -> str:
             f"(judged evidence for your decision, not an auto-gate)")
 
 
+def _security_line(sec: dict) -> str:
+    """G1 is the actual gate (rendered as a blocking warning when it failed — the
+    finding is already forced to tier B by security_gate.gate by the time this
+    renders). G2 is judged evidence like the gym score and shadow eval: shown
+    either way, never itself a reason the tier changed."""
+    g1, g2 = sec.get("g1") or {}, sec.get("g2") or {}
+    if g1.get("passed"):
+        parts = ["G1 pattern scan passed"]
+    else:
+        hits = ", ".join(f"{h['category']} (`{h['snippet']}`)" for h in g1.get("hits") or [])
+        parts = [f"**G1 BLOCKED** — {hits} — ineligible for tier A"]
+    if g2.get("scanned"):
+        if g2.get("verdict") == "mismatch":
+            parts.append(f"G2 purpose mismatch: {g2.get('reason') or 'no reason given'}")
+        else:
+            parts.append("G2 purpose check: match")
+    else:
+        parts.append(f"G2 not run — {g2.get('reason', 'unknown')}")
+    return "- security: " + "; ".join(parts)
+
+
 def _ops_block(payload: dict) -> list:
     """Bounded edits are proposed to be READ before they are applied, so the report
     shows each operation in full: what it does, the exact line it anchors on, the new
@@ -120,7 +141,7 @@ def _ops_block(payload: dict) -> list:
 
 
 def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
-           cumulative=None, shadow=None, roi=None, gym=None) -> str:
+           cumulative=None, shadow=None, roi=None, gym=None, security=None) -> str:
     L = [f"# self-optimize report — {run_id}", ""]
     if verify_rows:
         L += ["## Applied changes: outcomes", "",
@@ -156,6 +177,9 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
         gs = (gym or {}).get(r["id"])
         if gs:
             L.append(_gym_line(gs))
+        sec = (security or {}).get(r["id"])
+        if sec:
+            L.append(_security_line(sec))
         for loc in r.get("deep_localize") or []:
             b = loc.get("bracket") or [0, 0]
             L.append(f"- deep localize: session went off track around turn {b[0] + 1}-{b[1] + 1} "
@@ -294,6 +318,7 @@ def main(argv=None):
     cumulative = _cumulative_savings(ledger_entries)
     shadow = _optional_json(evdir / "shadow.json")
     gym = _optional_json(evdir / "gym.json")
+    security = _optional_json(evdir / "security.json")
     saved = sum((e.get("rec") or {}).get("delta_tokens") or 0
                 for e in ledger_entries.values() if e.get("status") == "verified")
     spent = sum(tokens.values()) if tokens else 0
@@ -306,7 +331,7 @@ def main(argv=None):
                 continue
     md = render(a.run_id, fdata["findings"], fdata["dropped"], verify_rows,
                 _trend(state), usage, {"analyst_tokens": tokens}, cumulative=cumulative,
-                shadow=shadow, roi={"saved": saved, "spent": spent}, gym=gym)
+                shadow=shadow, roi={"saved": saved, "spent": spent}, gym=gym, security=security)
     rdir = Path(cfg["report_dir"])
     rdir.mkdir(parents=True, exist_ok=True)
     out = rdir / f"{a.run_id}.md"

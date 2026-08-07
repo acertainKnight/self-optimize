@@ -121,6 +121,19 @@ last bullet below), and stop:
    chmod 600. The score renders on the finding in the report — it is judged
    evidence for the human decision, not an auto-gate. Skip the whole step when no
    finding qualifies.
+   **Security gate (G1 deterministic, G2 judged):**
+   `python3 SCRIPTS/security_gate.py --findings EV/findings.json --state STATE --out EV/security.json`
+   Runs on every finding whose payload adds or edits executable content — a fenced
+   script block in artifact text being written, or any `category: "hooks"` finding
+   (the hook spec is free-form prose, always in scope). An instruction-only edit is
+   never touched: zero pattern-scan calls, zero judge calls. G1 is a deterministic
+   pattern scan for network egress, credential-file reads, destructive commands, and
+   encoded payloads; any finding that fails it is downgraded from tier A to tier B
+   right here, in `findings.json`, same as the gym gate below. G2 reuses the gym's
+   judge backend (`gym.judge.command`) to ask whether the content matches its
+   declared purpose — judged evidence rendered on the finding, never an auto-gate,
+   and skipped gracefully (recorded as such) when no judge is configured, while G1
+   still runs in full either way. Print its summary line.
    **Gym gate (evolver candidates, judged):**
    `python3 SCRIPTS/gym.py gate --findings EV/findings.json --state STATE --out EV/gym.json --run-id RUN_ID`
    (add `--max-budget <N>` if the user passed one). It builds each candidate itself —

@@ -102,7 +102,27 @@ def _alts_for(rec: dict) -> list:
     return alts
 
 
-def _card_html(rec: dict, entry: dict | None) -> str:
+def _security_html(sec: dict | None) -> str:
+    """G1/G2 results from security_gate.gate, when this finding carried executable
+    content. G1 failing is why an otherwise tier-A finding is already tier B by the
+    time this renders; G2 is judged evidence shown either way, never itself a reason
+    the tier changed."""
+    if not sec:
+        return ""
+    g1, g2 = sec.get("g1") or {}, sec.get("g2") or {}
+    parts = []
+    if not g1.get("passed"):
+        hits = "; ".join(f'{_esc(h.get("category"))}: <code>{_esc(h.get("snippet"))}</code>'
+                         for h in g1.get("hits") or [])
+        parts.append(f'<p class="note">SECURITY: G1 blocked &mdash; {hits} '
+                     f'&mdash; ineligible for tier A</p>')
+    if g2.get("scanned") and g2.get("verdict") == "mismatch":
+        parts.append(f'<p class="note">SECURITY: G2 purpose mismatch &mdash; '
+                     f'{_esc(g2.get("reason", ""))}</p>')
+    return "".join(parts)
+
+
+def _card_html(rec: dict, entry: dict | None, sec: dict | None = None) -> str:
     rid = rec["id"]
     tier = rec["action"]["tier"]
     applicable = so_schema.is_applicable(rec["action"])
@@ -125,6 +145,7 @@ def _card_html(rec: dict, entry: dict | None) -> str:
                       f'&mdash; evidence has changed since</p>')
     parts.append(f'<p class="evidence">{_evidence_chips(rec["evidence_refs"])}</p>')
     parts.append(f'<p class="risk">{_esc(rec["risk"])}</p>')
+    parts.append(_security_html(sec))
     parts.append(f'<details><summary>payload</summary><pre>{_esc(_payload_body(payload))}</pre></details>')
     if interactive and applicable:
         # applicable = every tier-A type PLUS diff; amend guided-alts only ever
@@ -517,7 +538,7 @@ _JS = """
 
 
 def render_dashboard(run_id, findings, dropped, verify_rows, cumulative, usage,
-                      ledger_entries, generated_at=None) -> str:
+                      ledger_entries, generated_at=None, security=None) -> str:
     generated_at = generated_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     tier_a = [f for f in findings if f.get("action", {}).get("tier") == "A"]
     tier_b = [f for f in findings if f.get("action", {}).get("tier") == "B"]
@@ -552,9 +573,12 @@ def render_dashboard(run_id, findings, dropped, verify_rows, cumulative, usage,
         "<h2>Tier A &mdash; apply now</h2>",
         '<div class="cards">',
     ]
-    parts += [_card_html(rec, ledger_entries.get(rec["id"])) for rec in tier_a] or ["<p>None.</p>"]
+    security = security or {}
+    parts += [_card_html(rec, ledger_entries.get(rec["id"]), security.get(rec["id"]))
+              for rec in tier_a] or ["<p>None.</p>"]
     parts += ["</div>", "<h2>Tier B &mdash; assisted work</h2>", '<div class="cards">']
-    parts += [_card_html(rec, ledger_entries.get(rec["id"])) for rec in tier_b] or ["<p>None.</p>"]
+    parts += [_card_html(rec, ledger_entries.get(rec["id"]), security.get(rec["id"]))
+              for rec in tier_b] or ["<p>None.</p>"]
     parts += ["</div>", "</section>", "</div>"]
 
     body = "\n".join(parts)
@@ -617,8 +641,15 @@ def main(argv=None):
     ledger_entries = ledger_mod.load(state / "state" / "ledger.jsonl")
     cumulative = _cumulative_savings(ledger_entries)
     generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    sec_f = evdir / "security.json"
+    security = None
+    if sec_f.exists():
+        try:
+            security = json.loads(sec_f.read_text())
+        except json.JSONDecodeError:
+            security = None
     doc = render_dashboard(a.run_id, fdata["findings"], fdata["dropped"], verify_rows,
-                           cumulative, usage, ledger_entries, generated_at)
+                           cumulative, usage, ledger_entries, generated_at, security)
     rdir = Path(a.out) if a.out else Path(cfg["report_dir"])
     rdir.mkdir(parents=True, exist_ok=True)
     out = rdir / f"{a.run_id}.html"

