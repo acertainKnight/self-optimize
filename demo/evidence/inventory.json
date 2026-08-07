@@ -1,0 +1,12 @@
+{
+ "_synthetic": "Fabricated demo inventory -- see demo/README.md. No real skills, agents, or hosts.",
+ "schema_version": "1",
+ "harness": "demo",
+ "skills": [
+  {"id": "skill:widget-namer", "name": "widget-namer", "source": "user",
+   "path": "demo/skill/SKILL.md"}
+ ],
+ "agents": [],
+ "hooks": [],
+ "guidance": []
+}
