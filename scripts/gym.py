@@ -389,8 +389,9 @@ def parse_verdict(stdout: str, side: str) -> bool:
 def _invoke_judge(judge: dict, prompt: str) -> str:
     """The one subprocess driver every judge call goes through: a CLI that reads
     the prompt on stdin and writes its verdict JSON on stdout. Shared by run_judge
-    (gym scoring) and localize.py (bisection localization) so there is exactly one
-    place in this plugin that shells out to the configured backend."""
+    (gym scoring), localize.py (bisection localization), and curator.py (merge-text
+    drafting) so there is exactly one place in this plugin that shells out to the
+    configured backend."""
     cmd = [str(part).replace("{model}", str(judge.get("model") or ""))
            for part in judge["command"]]
     try:

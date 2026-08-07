@@ -166,6 +166,48 @@ class TestApply(unittest.TestCase):
         self.assertEqual(e["status"], "apply_failed")
         self.assertTrue(any("malformed payload" in x for x in e.get("errors", [])))
 
+    def test_retire_apply_snapshot_backed_and_rollback_roundtrip(self):
+        skill_dir = self.data / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        target = skill_dir / "SKILL.md"
+        original = "---\nname: foo\n---\nold body\n"
+        target.write_text(original)
+        rec = setting_rec()
+        rec["action"] = {"harness": "claude-code", "tier": "B", "type": "retire",
+                         "payload": {"path": str(target)}}
+        ledger.append(self.lpath, {"id": "r10", "status": "proposed", "rec": rec,
+                                   "evidence_hash": "e10"})
+        apply_mod.cmd_apply(["r10"], self.state, self.data, self.ev)
+        e = ledger.load(self.lpath)["r10"]
+        self.assertEqual(e["status"], "applied")
+        self.assertTrue(pathlib.Path(e["snapshot"]).exists())
+        archive = self.data / "skills" / ".retired" / "foo" / "SKILL.md"
+        self.assertFalse(target.exists())            # moved, not copied
+        self.assertEqual(archive.read_text(), original)
+        apply_mod.cmd_rollback("r10", self.state)
+        self.assertEqual(target.read_text(), original)   # back at the original path
+        self.assertFalse(archive.exists())                # archive copy undone too
+        self.assertEqual(ledger.load(self.lpath)["r10"]["status"], "rolled_back")
+
+    def test_retire_smoke_failure_restores_both_sides(self):
+        # the archived copy is still a .md under skills/, so it still owes
+        # smoke_check valid frontmatter; a source with none must restore BOTH
+        # the deleted original and the newly-created archive copy, not just one
+        skill_dir = self.data / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        target = skill_dir / "SKILL.md"
+        original = "no frontmatter here\n"
+        target.write_text(original)
+        rec = setting_rec()
+        rec["action"] = {"harness": "claude-code", "tier": "B", "type": "retire",
+                         "payload": {"path": str(target)}}
+        ledger.append(self.lpath, {"id": "r11", "status": "proposed", "rec": rec,
+                                   "evidence_hash": "e11"})
+        apply_mod.cmd_apply(["r11"], self.state, self.data, self.ev)
+        self.assertEqual(ledger.load(self.lpath)["r11"]["status"], "apply_failed")
+        self.assertEqual(target.read_text(), original)   # restored
+        self.assertFalse((self.data / "skills" / ".retired" / "foo" / "SKILL.md").exists())
+
     def test_manual_rec_skipped_with_handoff_message(self):
         rec = setting_rec()
         rec["action"] = {"harness": "claude-code", "tier": "B", "type": "manual",

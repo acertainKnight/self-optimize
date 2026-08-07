@@ -56,6 +56,17 @@ last bullet below), and stop:
 3. **Verify previous applies:**
    `python3 SCRIPTS/verify.py --evidence EV --state STATE --out EV/verify.json` —
    skip silently if the script does not exist yet or the ledger has no applied entries.
+3b. **Curator (deterministic dedupe/retire/lifecycle-metadata pass over the skill
+    library):** `python3 SCRIPTS/curator.py --evidence EV --state STATE --out
+    EV/curator.json` — pairwise similarity and activation counts, entirely in
+    Python, zero LLM calls. Flags near-duplicate skill pairs, skills that have
+    never fired or not fired in a long time, and skills missing lifecycle
+    frontmatter (`version`, `superseded_by`, `requires-tools`). For a duplicate
+    pair, if `STATE/config.json`'s `gym.judge.command` is set it also asks that
+    same backend (the gym's judge driver — no default vendor) to draft merged
+    skill text and emits a ready-to-apply diff instead of a manual review note.
+    Print its summary line; it always writes `EV/curator.json` (an empty array
+    when nothing was found), so step 5 can include it unconditionally.
 4. **Analysts (the only LLM step):** data floors first — if collect reported fewer
    than 20 sessions, skip transcript-miner and tell the user why ("not enough data
    yet"); if inventory shows zero plugins and zero skills, skip config-auditor
@@ -81,7 +92,7 @@ last bullet below), and stop:
    reads it automatically.
 5. **Synthesize:**
    **Deep localize (opt-in):** if `deep_localize.enabled` is true in config, run `python3 SCRIPTS/localize.py --evidence EV --data-root DATA_ROOT --state STATE --out EV/localize.json` (add `--max-budget <N>` if the user passed one) BEFORE the synth command below — it bisects the top-N friction sessions with the gym's judge backend and writes bracketed turn ranges + rationale that synth.py then attaches to any finding whose evidence touches that session, as supporting evidence never its own finding category; skip quietly (no file written) if it exits 2 for an unconfigured judge.
-   `python3 SCRIPTS/synth.py --evidence EV --data-root DATA_ROOT --state STATE --rules ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json --analyst EV/miner.json --analyst EV/auditor.json [--analyst EV/evolver.json] --out EV/findings.json`
+   `python3 SCRIPTS/synth.py --evidence EV --data-root DATA_ROOT --state STATE --rules ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json --analyst EV/miner.json --analyst EV/auditor.json --analyst EV/curator.json [--analyst EV/evolver.json] --out EV/findings.json`
    (include `--analyst EV/evolver.json` only if evolver ran in step 4.)
    **Citation retry (at most ONE round):** if the synth summary shows
    `dropped_citations > 0`, read `EV/findings.json`'s `dropped.citation_detail` — each

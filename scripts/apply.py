@@ -109,9 +109,15 @@ def cmd_apply(ids, state, data_root, evidence):
             meta.append(entry)
         try:
             for path, content in edits:
+                # content is None means "remove this path" -- the retire action's
+                # only way to express a move, using the same snapshot/restore meta
+                # every other edit already built above (pre_exists/pre_sha per path).
+                if content is None:
+                    path.unlink(missing_ok=True)
+                    continue
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content)
-            errs = templates.smoke_check([p for p, _ in edits], Path(data_root))
+            errs = templates.smoke_check([p for p, c in edits if c is not None], Path(data_root))
             if errs:
                 _restore(meta, snap)
                 ledger_mod.append(lpath, {"id": rid, "status": "apply_failed", "errors": errs,

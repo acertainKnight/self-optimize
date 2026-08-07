@@ -306,6 +306,53 @@ class TestTemplates(unittest.TestCase):
         errs = templates.smoke_check([claude_md], self.root)
         self.assertEqual(errs, [])
 
+    def test_retire_moves_to_dot_retired_archive(self):
+        (self.root / "skills" / "foo").mkdir(parents=True)
+        skill = self.root / "skills" / "foo" / "SKILL.md"
+        skill.write_text("---\nname: foo\n---\nbody\n")
+        edits = templates.render({"type": "retire", "payload": {"path": str(skill)}}, self.root)
+        self.assertEqual(len(edits), 2)
+        archive_edit, delete_edit = edits
+        self.assertEqual(archive_edit[0], self.root / "skills" / ".retired" / "foo" / "SKILL.md")
+        self.assertEqual(archive_edit[1], "---\nname: foo\n---\nbody\n")
+        self.assertEqual(delete_edit, (skill, None))
+
+    def test_retire_agent_flat_file(self):
+        agent = self.root / "agents" / "helper.md"
+        edits = templates.render({"type": "retire", "payload": {"path": str(agent)}}, self.root)
+        self.assertEqual(edits[0][0], self.root / "agents" / ".retired" / "helper.md")
+        self.assertEqual(edits[1], (agent, None))
+
+    def test_retire_missing_source_raises(self):
+        with self.assertRaises(ValueError):
+            templates.render({"type": "retire",
+                              "payload": {"path": str(self.root / "agents" / "ghost.md")}}, self.root)
+
+    def test_retire_existing_archive_destination_raises(self):
+        agent = self.root / "agents" / "helper.md"
+        archive_dir = self.root / "agents" / ".retired"
+        archive_dir.mkdir(parents=True)
+        (archive_dir / "helper.md").write_text("already here\n")
+        with self.assertRaises(ValueError):
+            templates.render({"type": "retire", "payload": {"path": str(agent)}}, self.root)
+
+    def test_retire_symlinked_source_rejected(self):
+        real = self.root / "real.md"
+        real.write_text("---\nname: real\n---\nbody\n")
+        link = self.root / "agents" / "link.md"
+        link.symlink_to(real)
+        with self.assertRaises(ValueError):
+            templates.render({"type": "retire", "payload": {"path": str(link)}}, self.root)
+
+    def test_retire_outside_skills_or_agents_rejected(self):
+        (self.root / "workflows").mkdir()
+        wf = self.root / "workflows" / "w.md"
+        wf.write_text("---\nname: w\n---\nbody\n")
+        with self.assertRaises(ValueError):   # sanctioned root, but not skills/agents
+            templates.render({"type": "retire", "payload": {"path": str(wf)}}, self.root)
+        with self.assertRaises(ValueError):
+            templates.render({"type": "retire", "payload": {"path": "/etc/passwd"}}, self.root)
+
     def test_smoke_check_catches_breakage(self):
         bad = self.root / "agents" / "bad.md"
         bad.write_text("---\nname: bad\nmodel: gpt-9\n---\n")

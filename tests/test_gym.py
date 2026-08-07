@@ -539,6 +539,29 @@ class TestGate(GymCase):
         self.assertIn("f1", json.loads(out.read_text()))
 
 
+class TestInvokeJudge(unittest.TestCase):
+    """_invoke_judge is the shared subprocess driver: run_judge (above),
+    localize.py's bisection, and curator.py's merge-text proposer all call it
+    directly. It returns raw stdout, with no opinion on what the caller does
+    with it."""
+    def test_returns_raw_stdout_for_any_shape(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        script = tmp / "echo_back.py"
+        script.write_text("import sys\nsys.stdout.write('freeform text, not JSON')\n")
+        judge = {"command": [sys.executable, str(script)], "model": "m", "timeout_s": 10}
+        self.assertEqual(gym._invoke_judge(judge, "prompt"), "freeform text, not JSON")
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_nonzero_exit_raises_judge_error(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        script = tmp / "fail.py"
+        script.write_text("import sys\nsys.stderr.write('nope')\nsys.exit(3)\n")
+        judge = {"command": [sys.executable, str(script)], "model": "m", "timeout_s": 10}
+        with self.assertRaises(gym.JudgeError):
+            gym._invoke_judge(judge, "prompt")
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 class TestVerdictParsing(unittest.TestCase):
     def test_bare_json(self):
         self.assertTrue(gym.parse_verdict('{"prevented": true}', "failure"))

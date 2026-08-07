@@ -157,6 +157,30 @@ class TestSynth(unittest.TestCase):
                               "payload": {"file": str(existing), "diff": "-a\n+b"}}}
             self.assertFalse(synth.guard(rec, DATA, extra_roots=[mem]))
 
+    def test_guard_retire_confined_to_skills_and_agents(self):
+        skill_ok = {"action": {"type": "retire", "tier": "B",
+                               "payload": {"path": "/fakehome/.claude/skills/x/SKILL.md"}}}
+        agent_ok = {"action": {"type": "retire", "tier": "B",
+                               "payload": {"path": "/fakehome/.claude/agents/x.md"}}}
+        bad = {"action": {"type": "retire", "tier": "B", "payload": {"path": "/etc/passwd"}}}
+        workflow_bad = {"action": {"type": "retire", "tier": "B",
+                                   "payload": {"path": "/fakehome/.claude/workflows/x.md"}}}
+        self.assertTrue(synth.guard(skill_ok, DATA))
+        self.assertTrue(synth.guard(agent_ok, DATA))
+        self.assertFalse(synth.guard(bad, DATA))
+        self.assertFalse(synth.guard(workflow_bad, DATA))
+
+    def test_guard_frontmatter_edit_lifecycle_keys_allowed(self):
+        for key in ("version", "superseded_by", "requires-tools"):
+            rec = {"action": {"type": "frontmatter_edit", "tier": "A",
+                              "payload": {"file": "/fakehome/.claude/skills/x/SKILL.md",
+                                          "key": key, "value": "1"}}}
+            self.assertTrue(synth.guard(rec, DATA), key)
+        other = {"action": {"type": "frontmatter_edit", "tier": "A",
+                            "payload": {"file": "/fakehome/.claude/skills/x/SKILL.md",
+                                        "key": "tools", "value": "Bash"}}}
+        self.assertFalse(synth.guard(other, DATA))
+
     def test_guard_diff_non_md_rejected(self):
         rec = {"action": {"type": "diff", "tier": "B",
                           "payload": {"file": "/fakehome/.claude/skills/x/helper.py",
