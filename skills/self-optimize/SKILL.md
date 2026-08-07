@@ -41,10 +41,16 @@ last bullet below), and stop:
    `python3 SCRIPTS/inventory.py --data-root DATA_ROOT --state STATE --out EV --rules ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json`, then
    `python3 SCRIPTS/gym.py update --evidence EV --state STATE --run-id RUN_ID` (derives
    the eval-gym registry from this run's inventory and accrues its graded cases; add a
-   second `--evidence <dir>` for each additional harness pack collected by an adapter).
+   second `--evidence EV/harness/<name>` for each harness subdirectory collect.py wrote).
    Print all three summary lines. If `STATE/config.json` did not exist before this run, tell
    the user it was created with defaults, and summarize what was read (session count,
    window) before continuing.
+   Collect covers every installed harness in one run: it walks the Claude Code corpus,
+   runs each discovered adapter into `EV/harness/<name>/`, and merges them into the
+   top-level evidence files. Its summary line ends with `harnesses=<name>:<sessions>,…`,
+   plus `harness_failed=<names>` when an adapter failed — report the failed harnesses to
+   the user and carry on, since the rest of the pack is still evidence. Collect exits
+   non-zero only if every harness failed.
 2. **`--stats-only`?** Print the summaries and the EV path, remind the user this cost
    zero LLM tokens, and STOP.
 3. **Verify previous applies:**

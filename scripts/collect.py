@@ -6,6 +6,7 @@ their tokens; use parentUuid threading (not file order) for correction adjacency
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -341,6 +342,233 @@ def _cap_samples(samples, sessions, caps, flagged=frozenset()):
     return out
 
 
+# ---------------------------------------------------------- multi-harness merge
+# Every installed harness contributes evidence to one run. Each adapter is a
+# subprocess writing the shared pack shape into <EV>/harness/<name>/; the merge
+# below folds those into the canonical top-level files, stamping each session and
+# sample row with the harness it came from. so_config.HARNESS_DEFAULTS owns the
+# data-root defaults; this table only maps a root onto the adapter's CLI flag.
+ADAPTERS = {
+    "codex": {"script": "adapters/codex/collect_codex.py",
+              "flags": {"home": "--codex-home"}},
+    "opencode": {"script": "adapters/opencode/collect_opencode.py",
+                 "flags": {"home": "--opencode-home", "config": "--opencode-config"}},
+}
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+ADAPTER_TIMEOUT_S = 300
+
+
+def discover_harnesses(cfg: dict, plugin_root=None) -> list:
+    """Run specs for every enabled harness whose data root exists on this machine.
+    Nothing else installed -> empty list -> the run is Claude Code alone, exactly
+    as before."""
+    import so_config
+    root = Path(plugin_root or PLUGIN_ROOT)
+    specs = []
+    for name, roots in sorted(so_config.harness_roots(cfg).items()):
+        spec = ADAPTERS.get(name)
+        if spec is None or not roots["home"].exists():
+            continue
+        argv = [sys.executable, str(root / spec["script"])]
+        for key, flag in spec["flags"].items():
+            argv += [flag, str(roots[key])]
+        specs.append({"name": name, "argv": argv})
+    return specs
+
+
+def run_adapter(spec: dict, harness_dir: Path, since=None, timeout: int = ADAPTER_TIMEOUT_S) -> dict:
+    """Runs one adapter into <EV>/harness/<name>/. A non-zero exit, a crash, or a
+    timeout marks that harness failed and is reported in the summary; it never
+    aborts the run or the other harnesses."""
+    out = Path(harness_dir) / spec["name"]
+    argv = list(spec["argv"]) + ["--out", str(out)]
+    if since:
+        argv += ["--since", str(since)]
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"name": spec["name"], "ok": False, "dir": str(out),
+                "error": redact.scrub(f"{type(e).__name__}: {e}")[0][:300]}
+    if p.returncode != 0:
+        err = (p.stderr or p.stdout or f"exit {p.returncode}").strip()
+        return {"name": spec["name"], "ok": False, "dir": str(out),
+                "error": redact.scrub(err)[0][-300:]}
+    return {"name": spec["name"], "ok": True, "dir": str(out), "error": None}
+
+
+def read_harness_pack(pack_dir) -> dict:
+    """Reads one adapter's output directory back into the in-memory pack shape.
+    A missing or unparseable file degrades to empty rather than raising: adapters
+    legitimately emit no working.json or activation.json."""
+    d = Path(pack_dir)
+
+    def _doc(name):
+        try:
+            doc = json.loads((d / name).read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return doc if isinstance(doc, dict) else {}
+
+    def _rows(name, key):
+        rows = _doc(name).get(key)
+        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+    items = _doc("activation.json").get("items")
+    return {"sessions": _rows("sessions.json", "sessions"),
+            "samples": _rows("samples.json", "samples"),
+            "working": _rows("working.json", "samples"),
+            "activation": {"items": items if isinstance(items, dict) else {}},
+            "usage": _doc("usage.json")}
+
+
+def _harness_budgets(total: int, counts: dict) -> dict:
+    """Splits one merged-pool cap across harnesses in proportion to their session
+    counts, with a floor of one so a chatty harness cannot crowd a quiet one out.
+    Integer largest-remainder: the parts sum to `total` and the split is the same
+    on every run. A single harness gets the whole cap, so nothing changes for a
+    Claude-Code-only machine."""
+    names = sorted(counts)
+    if total <= 0:
+        return {k: 0 for k in names}
+    n = sum(counts.values()) or 1
+    base = {k: total * counts[k] // n for k in names}
+    rem = {k: total * counts[k] % n for k in names}
+    alloc = {k: max(1, base[k]) for k in names}
+    while sum(alloc.values()) > total:
+        k = max(names, key=lambda k: (alloc[k], k))
+        if alloc[k] <= 1:
+            break
+        alloc[k] -= 1
+    left = max(0, total - sum(alloc.values()))
+    for k in sorted(names, key=lambda k: (-rem[k], k))[:left]:
+        alloc[k] += 1
+    return alloc
+
+
+def cap_merged_samples(samples: list, sessions: list, caps: dict, flagged=frozenset()) -> list:
+    """Applies the sample caps to the merged pool, proportionally per harness. With
+    one harness the budgets equal the caps, so this is exactly _cap_samples and the
+    single-harness output is unchanged."""
+    counts = Counter(s.get("harness") for s in sessions)
+    for smp in samples:
+        counts.setdefault(smp.get("harness"), 0)
+    if not counts:
+        return []
+    excerpts = _harness_budgets(caps["excerpts"], counts)
+    tokens = _harness_budgets(caps["total_tokens"], counts)
+    out = []
+    for h in sorted(counts):
+        hcaps = {"excerpts": excerpts[h], "total_tokens": tokens[h],
+                 "tokens_per_excerpt": caps["tokens_per_excerpt"]}
+        out += _cap_samples([s for s in samples if s.get("harness") == h],
+                            [s for s in sessions if s.get("harness") == h], hcaps, flagged)
+    return out
+
+
+def merge_usage(docs: dict) -> dict:
+    """Sums the per-harness usage docs field by field. Addition rather than a
+    recount off the merged sessions, so each adapter keeps ownership of the numbers
+    only it can compute (its own parse counts, stall detail, collector limits) and
+    a lone Claude Code doc comes through unchanged."""
+    tot = {k: 0 for k in ("sessions", "turns", "input_tokens", "output_tokens",
+                          "cache_read", "cache_write")}
+    waste_keys = ("duplicate_reads_total", "repeated_calls_total", "permission_stalls_total",
+                  "main_model_heavy_sessions", "revert_events_total", "reasks_total",
+                  "ended_on_correction_total")
+    waste = {k: 0 for k in waste_keys}
+    parse = {"skipped_lines": 0, "files": 0, "redactions": 0}
+    per_project, per_model, corr_by_model = {}, {}, {}
+    dup_paths, stall_tools, stall_examples, limits = Counter(), Counter(), [], []
+    since, until, corr_total, seen_since = None, None, 0, False
+    for name in sorted(docs):
+        u = docs[name] or {}
+        w = u.get("window") or {}
+        if not seen_since:
+            since, seen_since = w.get("since"), True
+        if w.get("until"):
+            until = max(until or "", w["until"])
+        for k in tot:
+            tot[k] += int((u.get("totals") or {}).get(k) or 0)
+        for proj, v in (u.get("per_project") or {}).items():
+            e = per_project.setdefault(proj, {"sessions": 0, "output_tokens": 0})
+            e["sessions"] += v.get("sessions") or 0
+            e["output_tokens"] += v.get("output_tokens") or 0
+        for m, v in (u.get("per_model") or {}).items():
+            e = per_model.setdefault(m, {"input": 0, "output": 0, "sessions": 0})
+            for k in e:
+                e[k] += v.get(k) or 0
+        for m, c in (u.get("corrections_by_model") or {}).items():
+            corr_by_model[m] = corr_by_model.get(m, 0) + c
+        uw = u.get("waste") or {}
+        for k in waste_keys:
+            waste[k] += int(uw.get(k) or 0)
+        for path, c in uw.get("top_duplicate_read_paths") or []:
+            dup_paths[path] += c
+        for tool, c in uw.get("top_stalled_tools") or []:
+            stall_tools[tool] += c
+        stall_examples += list(uw.get("stall_examples") or [])
+        up = u.get("parse") or {}
+        for k in parse:
+            parse[k] += int(up.get(k) or 0)
+        limits += [f"{name}: {t}" for t in (up.get("collector_limits") or [])]
+        corr_total += int((u.get("corrections") or {}).get("total") or 0)
+    if limits:
+        parse["collector_limits"] = limits
+    n = tot["sessions"]
+    return {"window": {"since": since, "until": until},
+            "totals": tot, "per_project": per_project, "per_model": per_model,
+            "corrections_by_model": corr_by_model,
+            "waste": {**waste,
+                      "top_duplicate_read_paths": sorted(dup_paths.items(),
+                                                         key=lambda kv: -kv[1])[:10],
+                      "top_stalled_tools": stall_tools.most_common(10),
+                      "stall_examples": stall_examples[:8]},
+            "corrections": {"total": corr_total,
+                            "rate_per_session": (corr_total / n) if n else 0.0},
+            "parse": parse}
+
+
+def merge_packs(packs: list, caps: dict, flagged=frozenset(), failures=None) -> dict:
+    """Folds [(harness, pack)] into one canonical pack. Deterministic: harnesses
+    contribute in sorted-name order, so the same inputs always produce the same
+    bytes, and re-merging an already-merged input changes nothing."""
+    sessions, samples, working, act, usage_docs = [], [], [], {}, {}
+    for name, pack in sorted(packs, key=lambda p: p[0]):
+        usage_docs[name] = pack.get("usage") or {}
+        sessions += [{**s, "harness": name} for s in pack.get("sessions") or []]
+        samples += [{**s, "harness": name} for s in pack.get("samples") or []]
+        working += [{**w, "harness": name} for w in pack.get("working") or []]
+        for item, v in ((pack.get("activation") or {}).get("items") or {}).items():
+            e = act.setdefault(item, {"count": 0, "last_used": None, "projects": []})
+            e["count"] += v.get("count") or 0
+            e["last_used"] = max(e["last_used"] or "", v.get("last_used") or "") or None
+            for p in v.get("projects") or []:
+                if p not in e["projects"]:
+                    e["projects"].append(p)
+    samples = cap_merged_samples(samples, sessions, caps, flagged)
+    per_harness = {}
+    for name in sorted(usage_docs):
+        per_harness[name] = {
+            "status": "ok",
+            "sessions": sum(1 for s in sessions if s["harness"] == name),
+            "corrections": int((usage_docs[name].get("corrections") or {}).get("total") or 0),
+            "samples": sum(1 for s in samples if s["harness"] == name)}
+    for name, err in sorted((failures or {}).items()):
+        per_harness[name] = {"status": "failed", "sessions": 0, "corrections": 0,
+                             "samples": 0, "error": err}
+    usage = merge_usage(usage_docs)
+    usage["per_harness"] = dict(sorted(per_harness.items()))
+    return {"sessions": sessions, "usage": usage, "activation": {"items": act},
+            "samples": samples, "working": working}
+
+
+def harness_exit_code(per_harness: dict) -> int:
+    """Non-zero only when every harness failed. A pack missing one harness is still
+    evidence, so a partial run succeeds and says which harness dropped out."""
+    return 1 if per_harness and all(v.get("status") == "failed"
+                                    for v in per_harness.values()) else 0
+
+
 def scale_caps_to_budget(caps: dict, budget: int | None, reserve: int = 8000, floor: int = 2000) -> dict:
     """Shrinks sample_caps proportionally so total_tokens fits inside budget minus a
     fixed overhead reserve (system prompt + rules + inventory the analysts also read).
@@ -524,18 +752,40 @@ def main(argv=None):
     queue_path = state / "capture-queue.jsonl"
     queue_entries, queue_malformed = read_capture_queue(queue_path)
     flagged = flagged_session_ids(queue_entries)
-    pack = collect_corpus(data_root, since, cfg["project_include"],
-                          cfg["project_exclude"], correction_re, caps, flagged)
+    packs, failures = [], {}
+    try:
+        packs.append((so_schema.HARNESS,
+                      collect_corpus(data_root, since, cfg["project_include"],
+                                     cfg["project_exclude"], correction_re, caps, flagged)))
+    except Exception as e:  # a harness that blows up is reported, not fatal
+        failures[so_schema.HARNESS] = redact.scrub(f"{type(e).__name__}: {e}")[0][:300]
+    for spec in discover_harnesses(cfg):
+        r = run_adapter(spec, Path(a.out) / "harness", since)
+        if r["ok"]:
+            packs.append((r["name"], read_harness_pack(r["dir"])))
+        else:
+            failures[r["name"]] = r["error"]
+    pack = merge_packs(packs, caps, flagged, failures)
     constraints = constraints_pack(state / "state" / "ledger.jsonl")
     write_pack(Path(a.out), pack, constraints)
     append_metrics(state, metrics_row(a.run_id, pack))
     mark_queue_consumed(queue_path, flagged)
     t = pack["usage"]["totals"]
+    per_harness = pack["usage"]["per_harness"]
+    ok = ",".join(f"{k}:{v['sessions']}" for k, v in per_harness.items() if v["status"] == "ok")
+    failed = ",".join(k for k, v in per_harness.items() if v["status"] == "failed")
     print(f"sessions={t['sessions']} corrections={pack['usage']['corrections']['total']} "
           f"dup_reads={pack['usage']['waste']['duplicate_reads_total']} "
           f"stalls={pack['usage']['waste']['permission_stalls_total']} "
           f"parse_skipped={pack['usage']['parse']['skipped_lines']} "
-          f"queue_flagged={len(flagged)} queue_malformed={queue_malformed}")
+          f"queue_flagged={len(flagged)} queue_malformed={queue_malformed} "
+          f"harnesses={ok}" + (f" harness_failed={failed}" if failed else ""))
+    for name, v in per_harness.items():
+        if v["status"] == "failed":
+            print(f"harness {name} failed: {v['error']}", file=sys.stderr)
+    code = harness_exit_code(per_harness)
+    if code:
+        raise SystemExit(code)
 
 
 if __name__ == "__main__":

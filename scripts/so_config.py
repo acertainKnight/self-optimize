@@ -6,6 +6,13 @@ import json
 import os
 from pathlib import Path
 
+# Default data roots for the non-Claude-Code harnesses. This module is the only
+# place these literals live; collect.py maps them onto each adapter's CLI flags.
+HARNESS_DEFAULTS = {
+    "codex": {"home": "~/.codex"},
+    "opencode": {"home": "~/.local/share/opencode", "config": "~/.config/opencode"},
+}
+
 DEFAULTS = {
     "config_version": 1,
     "report_dir": "",  # empty -> <state>/reports
@@ -14,6 +21,8 @@ DEFAULTS = {
     "since_days": 30,
     "sample_caps": {"excerpts": 40, "tokens_per_excerpt": 1500, "total_tokens": 60000},
     "correction_regex": "",  # empty -> collector default
+    "harnesses": {name: {"enabled": True, **roots}
+                  for name, roots in HARNESS_DEFAULTS.items()},
     "max_budget_tokens": 400000,
     "retain_runs": 10,
     "verify": {"min_sessions": 10, "min_rel_change": 0.10},
@@ -53,3 +62,19 @@ def load_config(state_dir: Path) -> dict:
     if not cfg["report_dir"]:
         cfg["report_dir"] = str(state_dir / "reports")
     return cfg
+
+
+def harness_roots(cfg: dict) -> dict:
+    """Resolved data roots per non-Claude-Code harness: {name: {key: Path}}.
+    A harness block in config.json replaces the default block wholesale (the
+    merge in load_config is one level deep), so a missing key falls back to the
+    default here and a missing "enabled" means enabled — you turn a harness off
+    by writing "enabled": false, never by omitting it."""
+    out = {}
+    for name, roots in HARNESS_DEFAULTS.items():
+        over = (cfg.get("harnesses") or {}).get(name) or {}
+        if not over.get("enabled", True):
+            continue
+        out[name] = {k: Path(str(over.get(k) or default)).expanduser()
+                     for k, default in roots.items()}
+    return out

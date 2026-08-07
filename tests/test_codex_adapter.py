@@ -146,6 +146,18 @@ class TestCodexAdapter(unittest.TestCase):
             self.assertEqual(usage["totals"]["output_tokens"], 1500)
             self.assertTrue(usage["parse"]["collector_limits"])
 
+    def test_since_filters_the_rows_not_just_the_totals(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = pathlib.Path(d) / "codex"
+            ev = pathlib.Path(d) / "ev"
+            make_codex_home(home, THREADS)   # t1 2025-07-16, t2 2025-07-18
+            collect_codex.main(["--codex-home", str(home), "--out", str(ev),
+                                "--since", "2025-07-17T00:00:00Z"])
+            sessions = json.loads((ev / "sessions.json").read_text())["sessions"]
+            usage = json.loads((ev / "usage.json").read_text())
+            self.assertEqual([s["id"] for s in sessions], ["t2"])
+            self.assertEqual(usage["totals"]["sessions"], len(sessions))
+
     def test_main_writes_stamped_600_files(self):
         with tempfile.TemporaryDirectory() as d:
             home = pathlib.Path(d) / "codex"

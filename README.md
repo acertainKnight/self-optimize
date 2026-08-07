@@ -288,8 +288,17 @@ collects sessions and config surface from a Codex CLI install, evidence only.
 chat, which is cloud-side with no local transcript store. `adapters/opencode/` collects
 sessions and turn-level corrections from an opencode install's `opencode.db` SQLite store,
 plus its config surface, also evidence only. All three declare their gaps in
-`parse.collector_limits` rather than emitting zeros silently. Turn-level Codex parsing is
-#19, and merging every adapter into one run is #20.
+`parse.collector_limits` rather than emitting zeros silently.
+
+One run covers all of them. `collect.py` probes the default data roots, runs each adapter
+it finds into `EV/harness/<name>/`, and merges those packs into the canonical evidence
+files with a `harness` field on every session and sample row. Sample caps apply to the
+merged pool, split in proportion to each harness's session count so a chatty harness cannot
+crowd out a quiet one. An adapter that crashes is marked failed in the summary and in
+`usage.per_harness`; the run continues on what it has. Override the probed roots, or turn a
+harness off, with a `"harnesses"` block in `config.json` — see `docs/evidence-schema.md`.
+The claude.ai export adapter stays a manual run, because the export is a file you request
+by hand.
 
 ## Install
 

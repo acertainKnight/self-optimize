@@ -434,6 +434,10 @@ def main(argv=None):
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     sessions = collect_sessions(Path(a.codex_home))
+    # the window applies to the rows too, not just the usage totals: sessions.json,
+    # samples.json and usage.json all have to describe the same window
+    if a.since:
+        sessions = [s for s in sessions if (s["started_at"] or "") >= a.since]
     samples = []
     for s in sessions:
         for smp in s.pop("_samples", []):
