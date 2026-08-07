@@ -1,0 +1,295 @@
+"""Variant archive: every candidate version of an artifact the gym scored, kept with
+its parent, its edit ops, its two-sided score and where it came from.
+
+Single-lineage editing keeps one live version and discards everything else, so a
+candidate that was better on one side than anything proposed since is simply gone, and
+the loop can only climb from wherever it happens to stand. The archive keeps them all:
+`<state>/gym/archive/<artifact>/<variant>.json`, one file per scored candidate, mode
+0600 under 0700 dirs like the rest of the gym state. A variant holds artifact text
+rather than transcript excerpts, but it lives beside the corpus and inherits its posture.
+
+Lineage is a DAG, not a list. Each variant records `parent` — the variant its edits were
+written against, or null for edits written against the live artifact — and two op lists:
+`ops`, the edits relative to that parent, and `chain_ops`, the flattened set that applies
+to the live artifact. Keeping the flattened set is what lets a proposal branch from an
+archived variant that was never applied: the branch is its parent's chain plus its own
+delta, so the whole thing still applies to the file on disk as one ordered bounded edit,
+and still fails closed if the file moved on since.
+
+Retention: `gym.max_variants_per_artifact` caps the archive per artifact. Dominated
+variants are evicted first — one that some other variant beats on BOTH prevented and
+preserved has nothing left to contribute to a front. After that it is oldest-first. The
+variant matching what the artifact file holds right now is never evicted, and neither is
+the newest: the archive's job is to remember, and losing the live version or the run's
+own candidate would defeat it.
+
+Nothing here applies, promotes or rejects anything. It records what was scored.
+"""
+import hashlib
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
+ARCHIVE_VERSION = "1"
+DEFAULT_CAP = 20
+
+
+# ---------------------------------------------------------------- state layout
+def _slug(artifact_id: str) -> str:
+    """Same readable-but-safe naming the gym corpus uses: sanitized head, truncated,
+    disambiguated with a hash of the whole id."""
+    head = re.sub(r"[^A-Za-z0-9_.-]", "_", artifact_id)[:60]
+    return f"{head}-{hashlib.sha256(artifact_id.encode()).hexdigest()[:8]}"
+
+
+def archive_root(state, create: bool = False) -> Path:
+    d = Path(state) / "gym" / "archive"
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+        d.chmod(0o700)
+    return d
+
+
+def artifact_dir(state, artifact_id: str, create: bool = False) -> Path:
+    d = archive_root(state, create) / _slug(artifact_id)
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+        d.chmod(0o700)
+    return d
+
+
+def text_sha(text: str) -> str:
+    return hashlib.sha256((text or "").encode()).hexdigest()[:16]
+
+
+def file_sha(path) -> str:
+    """The artifact file's current content hash, or "" when it cannot be read — a
+    missing or unreadable artifact means "nothing is live", never an exception."""
+    try:
+        return text_sha(Path(str(path)).expanduser().read_text(errors="replace"))
+    except (OSError, TypeError):
+        return ""
+
+
+def variant_id(artifact_id: str, parent, sha: str) -> str:
+    """Content-addressed, so re-proposing the same candidate from the same parent
+    re-writes one node instead of growing a duplicate lineage every run."""
+    basis = "|".join([artifact_id, str(parent or ""), sha])
+    return hashlib.sha256(basis.encode()).hexdigest()[:12]
+
+
+def _write(path: Path, obj: dict) -> None:
+    path.write_text(json.dumps(obj, indent=1))
+    path.chmod(0o600)
+
+
+def load(state, artifact_id: str) -> list:
+    """Every archived variant for one artifact, oldest first."""
+    d = artifact_dir(state, artifact_id)
+    if not d.is_dir():
+        return []
+    out = []
+    for f in sorted(d.glob("*.json")):
+        try:
+            rec = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(rec, dict) and rec.get("id"):
+            out.append(rec)
+    return sorted(out, key=lambda v: (v.get("seq", 0), v["id"]))
+
+
+def load_all(state) -> dict:
+    """{artifact_id: [variants]} across the whole archive. The directory name is a
+    slug, so the artifact id is read back out of the records themselves."""
+    root = archive_root(state)
+    if not root.is_dir():
+        return {}
+    out = {}
+    for d in sorted(root.iterdir()):
+        if not d.is_dir():
+            continue
+        recs = []
+        for f in sorted(d.glob("*.json")):
+            try:
+                rec = json.loads(f.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if isinstance(rec, dict) and rec.get("id") and rec.get("artifact"):
+                recs.append(rec)
+        if recs:
+            recs.sort(key=lambda v: (v.get("seq", 0), v["id"]))
+            out[recs[0]["artifact"]] = recs
+    return out
+
+
+def get(state, artifact_id: str, vid: str):
+    f = artifact_dir(state, artifact_id) / f"{vid}.json"
+    try:
+        rec = json.loads(f.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+# ---------------------------------------------------------------- scores
+def rates(v: dict):
+    """(prevented rate, preserved rate) for a scored variant, or None when it has no
+    usable score. An unscorable variant is not a bad variant — it is an unmeasured one,
+    so it never dominates and is never dominated."""
+    s = v.get("scores") or {}
+    if s.get("unscorable", True):
+        return None
+    p, w = s.get("prevented") or {}, s.get("preserved") or {}
+    if not p.get("of") or not w.get("of"):
+        return None
+    return (p["n"] / p["of"], w["n"] / w["of"])
+
+
+def dominates(a: dict, b: dict) -> bool:
+    """a is strictly better than b on BOTH sides. Strict on both is deliberate: a
+    variant that ties on one side still carries a trade-off worth keeping."""
+    ra, rb = rates(a), rates(b)
+    if ra is None or rb is None:
+        return False
+    return ra[0] > rb[0] and ra[1] > rb[1]
+
+
+def dominated_ids(records: list) -> list:
+    return [v["id"] for v in records if any(dominates(o, v) for o in records if o["id"] != v["id"])]
+
+
+# ---------------------------------------------------------------- retention
+def evict(records: list, cap: int, live: str | None = None) -> tuple:
+    """(kept, evicted) for one artifact's archive. Dominated variants go first, oldest
+    first within each group; the live variant and the newest one are never evicted."""
+    if cap <= 0 or len(records) <= cap:
+        return list(records), []
+    protected = {records[-1]["id"]}
+    if live:
+        protected.add(live)
+    dominated = set(dominated_ids(records))
+    droppable = [v for v in records if v["id"] not in protected]
+    order = ([v for v in droppable if v["id"] in dominated]
+             + [v for v in droppable if v["id"] not in dominated])
+    n_drop = min(len(records) - cap, len(order))
+    evicted = {v["id"] for v in order[:n_drop]}
+    return [v for v in records if v["id"] not in evicted], [v for v in order[:n_drop]]
+
+
+# ---------------------------------------------------------------- writing
+def record(state, artifact_id: str, text: str, score: dict, *, base_sha: str = "",
+           ops=(), chain_ops=None, parent=None, run_id=None, finding_id=None,
+           path=None, provenance=None, cap: int = DEFAULT_CAP) -> dict:
+    """Archive one scored candidate and enforce the cap. `base_sha` is the hash of the
+    text the ops were applied to: when no parent is declared, the archived variant
+    holding exactly that text IS the parent, which is how an applied variant becomes
+    the trunk the next run branches from without anyone writing the edge by hand."""
+    existing = load(state, artifact_id)
+    if parent is None and base_sha:
+        parent = next((v["id"] for v in existing if v.get("text_sha") == base_sha), None)
+    sha = text_sha(text)
+    vid = variant_id(artifact_id, parent, sha)
+    prior = next((v for v in existing if v["id"] == vid), None)
+    s = score or {}
+    rec = {
+        "schema_version": ARCHIVE_VERSION,
+        "id": vid,
+        "artifact": artifact_id,
+        "parent": parent,
+        "seq": prior["seq"] if prior else (max((v.get("seq", 0) for v in existing), default=0) + 1),
+        "run_id": run_id,
+        "finding_id": finding_id,
+        "created_at": (prior or {}).get("created_at")
+                      or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "path": str(path) if path else None,
+        "base_sha": base_sha,
+        "text_sha": sha,
+        "text": text,
+        "ops": list(ops or []),
+        "chain_ops": list(chain_ops if chain_ops is not None else (ops or [])),
+        "scores": {"prevented": s.get("prevented") or {"n": 0, "of": 0},
+                   "preserved": s.get("preserved") or {"n": 0, "of": 0},
+                   "unscorable": bool(s.get("unscorable", True)),
+                   "reason": s.get("reason") or ""},
+        "provenance": provenance or {},
+    }
+    d = artifact_dir(state, artifact_id, create=True)
+    _write(d / f"{vid}.json", rec)
+
+    records = [v for v in existing if v["id"] != vid] + [rec]
+    records.sort(key=lambda v: (v.get("seq", 0), v["id"]))
+    _, evicted = evict(records, cap, live=live_id(records))
+    for v in evicted:
+        (d / f"{v['id']}.json").unlink(missing_ok=True)
+    return rec
+
+
+# ---------------------------------------------------------------- reading
+def live_id(records: list):
+    """The archived variant whose text is what the artifact file holds right now, if
+    any. Read from disk rather than tracked through apply: what is live is a fact about
+    the file, not a claim this module would have to keep in sync."""
+    path = next((v.get("path") for v in reversed(records) if v.get("path")), None)
+    if not path:
+        return None
+    sha = file_sha(path)
+    if not sha:
+        return None
+    return next((v["id"] for v in records if v.get("text_sha") == sha), None)
+
+
+def score_text(v: dict) -> str:
+    s = v.get("scores") or {}
+    if s.get("unscorable", True):
+        return f"unscorable — {s.get('reason') or 'no score'}"
+    p, w = s.get("prevented") or {}, s.get("preserved") or {}
+    return (f"prevented {p.get('n', 0)}/{p.get('of', 0)}  "
+            f"preserved {w.get('n', 0)}/{w.get('of', 0)}")
+
+
+def _op_text(op: dict) -> str:
+    kind = op.get("op")
+    line = f"{kind} @ {str(op.get('anchor', ''))[:60]!r}"
+    if op.get("text"):
+        line += f" -> {str(op['text'])[:60]!r}"
+    return line
+
+
+def lineage_lines(artifact_id: str, records: list, live: str | None = None) -> list:
+    """Depth-first lineage view: parents before children, each variant with its score,
+    its edits relative to its parent, and where it came from."""
+    if not records:
+        return [f"{artifact_id}: no archived variants yet"]
+    children = {}
+    known = {v["id"] for v in records}
+    for v in records:
+        parent = v.get("parent") if v.get("parent") in known else None
+        children.setdefault(parent, []).append(v)
+    lines = [f"{artifact_id} — {len(records)} archived variant(s)"]
+
+    def walk(parent, depth):
+        for v in children.get(parent, []):
+            pad = "  " * (depth + 1)
+            marks = []
+            if v["id"] == live:
+                marks.append("LIVE")
+            if v.get("parent") and v.get("parent") not in known:
+                marks.append(f"parent {v['parent']} evicted")
+            head = f"{pad}{v['id']}  run {v.get('run_id') or '-'}  {score_text(v)}"
+            if marks:
+                head += "  [" + ", ".join(marks) + "]"
+            lines.append(head)
+            prov = v.get("provenance") or {}
+            if prov.get("title"):
+                lines.append(f"{pad}  {prov['title']}")
+            if prov.get("expected_improvement"):
+                lines.append(f"{pad}  expected: {prov['expected_improvement']}")
+            for op in v.get("ops") or []:
+                if isinstance(op, dict):
+                    lines.append(f"{pad}  {_op_text(op)}")
+            walk(v["id"], depth + 1)
+
+    walk(None, 0)
+    return lines

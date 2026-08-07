@@ -146,6 +146,11 @@ last bullet below), and stop:
    backend or model on their behalf, and this run's evolver candidates all stay tier B.
    Both numbers render on the finding: prevented failure cases AND preserved working
    cases, evidence for the human decision, never an auto-gate.
+   The gate also archives every candidate it built under `STATE/gym/archive/<artifact>/`,
+   whether or not it was scored and whether or not anyone applies it. To show a user the
+   history of one artifact, run `python3 SCRIPTS/gym.py archive <artifact-id> --state
+   STATE` — it prints the lineage with both score sides and the edits behind each
+   version. It reads only; promoting a version is still a decision made on the findings.
 6. **Report:**
    `python3 SCRIPTS/report.py --evidence EV --state STATE --run-id RUN_ID`
    (analyst tokens come from `EV/analyst_tokens.json` written in step 4; the
