@@ -31,5 +31,6 @@ and the analyst agent definitions. Portable analyzers: transcript-miner and
 sample-labeler (harness-neutral content), synth, report, ledger, verify.
 Harness-scoped: config-auditor + rules.json + templates.py (the Claude Code
 adapter). Additional collectors emitting this same shape: `adapters/codex/`
-(Codex CLI threads DB + config surface) and `adapters/claude_chat/` (claude.ai
-data export) — both evidence-only, gaps declared in `parse.collector_limits`.
+(Codex CLI threads DB + config surface), `adapters/claude_chat/` (claude.ai
+data export), and `adapters/opencode/` (opencode's `opencode.db` SQLite store
++ config surface) — all evidence-only, gaps declared in `parse.collector_limits`.

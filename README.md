@@ -127,19 +127,19 @@ Merged on `main` and working:
   check and auto-restore, and one-command rollback.
 - Next-run verification with cohort verdicts and a program ROI line: verified token
   savings against analyst tokens spent.
-- Evidence-only adapters for the Codex CLI and for the claude.ai conversation export.
+- Evidence-only adapters for the Codex CLI, the claude.ai conversation export, and opencode.
 
 ## Roadmap
 
 Tracked as four waves plus a portfolio epic. Nothing below is implemented.
 
 - [#40 — Wave 1: the spine](https://github.com/acertainKnight/self-optimize/issues/40).
-  One data path across harnesses feeding an eval gym that gates self-edits: an opencode
-  collector (#18), a turn-level Codex rollout parser (#19), one run that merges evidence
-  from every adapter (#20), the self-maintaining gym registry and case corpus (#21), the
-  judge runner and scoring (#22), an evolver that makes bullet-level incremental edits
-  gated on gym scores instead of whole-file rewrites (#23), inline trigger capture (#24),
-  and a papercut channel where agents self-report friction they worked around (#25).
+  One data path across harnesses feeding an eval gym that gates self-edits: a turn-level
+  Codex rollout parser (#19), one run that merges evidence from every adapter (#20), the
+  self-maintaining gym registry and case corpus (#21), the judge runner and scoring (#22),
+  an evolver that makes bullet-level incremental edits gated on gym scores instead of
+  whole-file rewrites (#23), inline trigger capture (#24), and a papercut channel where
+  agents self-report friction they worked around (#25).
 - [#41 — Wave 2: gym consumers](https://github.com/acertainKnight/self-optimize/issues/41).
   Durable corrections compiled into enforcement proposals (#28), a curator that dedupes
   and retires skills (#29), a validated failure taxonomy (#30), a silent-failure detector
@@ -285,9 +285,11 @@ Where each harness stands today: Claude Code is complete, including sessions lau
 the desktop app, which land in the same `<config-dir>/projects/` store. `adapters/codex/`
 collects sessions and config surface from a Codex CLI install, evidence only.
 `adapters/claude_chat/` ingests the official claude.ai data export to mine corrections from
-chat, which is cloud-side with no local transcript store. Both declare their gaps in
-`parse.collector_limits` rather than emitting zeros silently. An opencode collector is #18,
-turn-level Codex parsing is #19, and merging every adapter into one run is #20.
+chat, which is cloud-side with no local transcript store. `adapters/opencode/` collects
+sessions and turn-level corrections from an opencode install's `opencode.db` SQLite store,
+plus its config surface, also evidence only. All three declare their gaps in
+`parse.collector_limits` rather than emitting zeros silently. Turn-level Codex parsing is
+#19, and merging every adapter into one run is #20.
 
 ## Install
 
