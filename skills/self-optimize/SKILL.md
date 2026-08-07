@@ -50,7 +50,9 @@ last bullet below), and stop:
    top-level evidence files. Its summary line ends with `harnesses=<name>:<sessions>,…`,
    plus `harness_failed=<names>` when an adapter failed — report the failed harnesses to
    the user and carry on, since the rest of the pack is still evidence. Collect exits
-   non-zero only if every harness failed.
+   non-zero only if every harness failed. The same summary line's `papercuts=<n>` is the
+   count of live (unarchived) lines read from this instance's papercut file — see
+   README.md's Papercut channel; an absent file reads as `papercuts=0`, not an error.
 2. **`--stats-only`?** Print the summaries and the EV path, remind the user this cost
    zero LLM tokens, and STOP.
 3. **Verify previous applies:**
@@ -77,7 +79,7 @@ last bullet below), and stop:
    standing constraints instruction. Each analyst reads ONLY its own copies under
    `EV/analysts/<name>/` (written by inventory.py) — never the canonical `EV/*.json`
    paths, so parallel analysts cannot interfere through shared-path session state:
-   - `subagent_type: "self-optimize:transcript-miner"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/analysts/miner/usage.json, EV/analysts/miner/samples.json, EV/analysts/miner/sessions.json, EV/analysts/miner/constraints.json>. Standing constraints — constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
+   - `subagent_type: "self-optimize:transcript-miner"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/analysts/miner/usage.json, EV/analysts/miner/samples.json, EV/analysts/miner/sessions.json, EV/analysts/miner/constraints.json, EV/analysts/miner/papercuts.json>. Standing constraints — constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
    - `subagent_type: "self-optimize:config-auditor"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/analysts/auditor/inventory.json, EV/analysts/auditor/activation.json, EV/analysts/auditor/usage.json, EV/analysts/auditor/constraints.json>. Rules file: EV/analysts/auditor/rules.json. Standing constraints — constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
    - `subagent_type: "self-optimize:evolver"`, prompt: "Config dir: DATA_ROOT. Evidence files: <absolute paths of EV/analysts/evolver/artifacts.json, EV/analysts/evolver/samples.json, EV/analysts/evolver/constraints.json>. Rules file: EV/analysts/evolver/rules.json. Standing constraints — constraints.json lists ideas already rejected by this user; do not re-propose them absent new evidence. Return the JSON array."
    - `subagent_type: "self-optimize:sample-labeler"` (skip when samples are empty), prompt: "Samples file: <absolute path of EV/analysts/labeler/samples.json>. Label every sample. Return the JSON array."

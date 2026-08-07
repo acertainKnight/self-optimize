@@ -208,6 +208,66 @@ class TestVerify(unittest.TestCase):
         apply_mod.cmd_rollback("r1", state)   # the report's one-command rollback must work
         self.assertEqual(json.loads((data / "settings.json").read_text()), {"model": "opusplan"})
 
+    def test_verified_finding_archives_cited_papercut_lines(self):
+        import json, tempfile
+        from datetime import datetime, timedelta, timezone
+        import apply as apply_mod
+        import ledger
+        import papercuts
+        import so_config
+        base = pathlib.Path(tempfile.mkdtemp())
+        state, data, ev = base / "state", base / "claude", base / "ev"
+        for d in (state, data, ev):
+            d.mkdir()
+        pc_file = base / "papercuts.md"
+        pc_file.write_text(
+            "- 2026-08-01 claude-code fixed by this finding\n"
+            "- 2026-08-02 codex unrelated, must stay untouched\n")
+        target_id = papercuts.read_papercuts(pc_file)[0]["id"]
+        # point this instance's config at the seeded papercuts file
+        so_config.load_config(state)
+        cfg_path = state / "config.json"
+        cfg = json.loads(cfg_path.read_text())
+        cfg["papercuts_path"] = str(pc_file)
+        cfg_path.write_text(json.dumps(cfg))
+
+        (data / "settings.json").write_text(json.dumps({}))
+        (ev / "sessions.json").write_text(json.dumps({"sessions": [
+            {"started_at": "2026-06-01T00:00:00Z", "corrections_count": 1}]}))
+        rec = {"title": "t", "category": "bloat", "evidence_refs": [f"papercut:{target_id}"],
+               "impact": {"ordinal": "low"}, "risk": "low",
+               "metric": {"key": "correction_rate", "direction": "down", "scope": "global"},
+               "action": {"harness": "claude-code", "tier": "A", "type": "setting_change",
+                          "payload": {"file": "settings.json",
+                                      "key_path": ["skillOverrides", "d"], "value": "off"}}}
+        lpath = state / "state" / "ledger.jsonl"
+        ledger.append(lpath, {"id": "r1", "status": "proposed", "rec": rec, "evidence_hash": "e"})
+        apply_mod.cmd_apply(["r1"], state, data, ev)
+
+        now = datetime.now(timezone.utc)
+        (ev / "sessions.json").write_text(json.dumps({"sessions": [
+            {"started_at": (now + timedelta(days=i + 1)).isoformat(), "corrections_count": 0}
+            for i in range(12)]}))
+        verify.main(["--evidence", str(ev), "--state", str(state), "--data-root", str(data),
+                     "--out", str(ev / "verify.json")])
+        self.assertEqual(ledger.load(lpath)["r1"]["status"], "verified")
+
+        text = pc_file.read_text()
+        self.assertIn("## Archive", text)
+        self.assertIn("fixed by this finding", text)
+        self.assertIn("unrelated, must stay untouched", text)
+        heading_idx = text.index("## Archive")
+        self.assertGreater(text.index("fixed by this finding"), heading_idx)
+        self.assertLess(text.index("unrelated, must stay untouched"), heading_idx)
+        remaining = papercuts.read_papercuts(pc_file)
+        self.assertEqual(len(remaining), 1)
+        self.assertIn("unrelated, must stay untouched", remaining[0]["text"])
+
+        # re-running verify on the now-terminal 'verified' status is a harmless no-op
+        verify.main(["--evidence", str(ev), "--state", str(state), "--data-root", str(data),
+                     "--out", str(ev / "verify.json")])
+        self.assertEqual(papercuts.read_papercuts(pc_file), remaining)
+
     def test_main_writes_verify_with_600_perms(self):
         import json, tempfile
         base = pathlib.Path(tempfile.mkdtemp())

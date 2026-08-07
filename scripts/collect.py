@@ -11,6 +11,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+import papercuts
 import redact
 
 DEFAULT_CORRECTION_RE = re.compile(
@@ -624,6 +625,13 @@ def constraints_pack(lpath: Path, limit: int = 20) -> dict:
                                 for e in rejected]})
 
 
+def papercuts_pack(path: Path) -> dict:
+    """Papercut lines are harness-neutral (see papercuts.py): read once from the
+    configured file, not per adapter, then merged into the evidence pack same as
+    constraints_pack. Absent file -> {"lines": []}, never an error."""
+    return _stamp({"lines": papercuts.read_papercuts(path)})
+
+
 def read_capture_queue(path: Path) -> tuple[list, int]:
     """Reads <state>/capture-queue.jsonl, appended to by the opt-in (never
     auto-enabled) Stop hook in hooks/capture_trigger.py. A line that isn't a
@@ -679,7 +687,8 @@ def mark_queue_consumed(path: Path, consumed_ids: set) -> None:
     path.chmod(0o600)
 
 
-def write_pack(out_dir: Path, pack: dict, constraints: dict | None = None) -> None:
+def write_pack(out_dir: Path, pack: dict, constraints: dict | None = None,
+              papercuts_doc: dict | None = None) -> None:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "sessions.json").write_text(json.dumps(_stamp({"sessions": pack["sessions"]}), indent=1))
@@ -690,6 +699,8 @@ def write_pack(out_dir: Path, pack: dict, constraints: dict | None = None) -> No
         json.dumps(_stamp({"samples": pack.get("working", [])}), indent=1))
     if constraints is not None:
         (out_dir / "constraints.json").write_text(json.dumps(constraints, indent=1))
+    if papercuts_doc is not None:
+        (out_dir / "papercuts.json").write_text(json.dumps(papercuts_doc, indent=1))
     for f in out_dir.glob("*.json"):
         f.chmod(0o600)
 
@@ -767,7 +778,8 @@ def main(argv=None):
             failures[r["name"]] = r["error"]
     pack = merge_packs(packs, caps, flagged, failures)
     constraints = constraints_pack(state / "state" / "ledger.jsonl")
-    write_pack(Path(a.out), pack, constraints)
+    pc_doc = papercuts_pack(so_config.papercuts_path(cfg))
+    write_pack(Path(a.out), pack, constraints, pc_doc)
     append_metrics(state, metrics_row(a.run_id, pack))
     mark_queue_consumed(queue_path, flagged)
     t = pack["usage"]["totals"]
@@ -779,6 +791,7 @@ def main(argv=None):
           f"stalls={pack['usage']['waste']['permission_stalls_total']} "
           f"parse_skipped={pack['usage']['parse']['skipped_lines']} "
           f"queue_flagged={len(flagged)} queue_malformed={queue_malformed} "
+          f"papercuts={len(pc_doc['lines'])} "
           f"harnesses={ok}" + (f" harness_failed={failed}" if failed else ""))
     for name, v in per_harness.items():
         if v["status"] == "failed":

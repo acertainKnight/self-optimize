@@ -8,6 +8,7 @@ from pathlib import Path
 
 import ledger as ledger_mod
 import metriclib
+import papercuts
 
 
 INVENTORY_METRICS = ("base_context_est", "unused_surface_count")
@@ -194,6 +195,20 @@ def main(argv=None):
                                       "applied_at": prior.get("applied_at"),
                                       "baseline": prior.get("baseline"),
                                       "evidence_hash": prior.get("evidence_hash")})
+    # papercut channel: a verified finding archives the lines it cited, leaving
+    # unrelated lines untouched. archive_lines() is a no-op on an already-moved
+    # id, so re-checking a still-verified entry on a later run costs nothing.
+    pc_ids = set()
+    for r in rows:
+        if r["verdict"] != "verified":
+            continue
+        rec = (entries.get(r["id"]) or {}).get("rec") or {}
+        pc_ids |= {ref.split(":", 1)[1] for ref in rec.get("evidence_refs") or []
+                  if isinstance(ref, str) and ref.startswith("papercut:")}
+    if pc_ids:
+        n = papercuts.archive_lines(so_config.papercuts_path(cfg), pc_ids)
+        if n:
+            print(f"papercuts archived: {n}")
     print(f"verified={sum(r['verdict'] == 'verified' for r in rows)} "
           f"regressed={sum(r['verdict'] == 'regressed' for r in rows)} "
           f"inconclusive={sum(r['verdict'] == 'inconclusive' for r in rows)}")

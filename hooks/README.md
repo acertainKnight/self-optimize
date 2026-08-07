@@ -28,8 +28,10 @@ correction-regex match `collect.py` already uses:
   workflow."
 
 A fourth trigger from the original spec, an agent noticing and self-reporting
-a papercut, has no producer yet — there is no file or transcript signal to
-key off until that channel exists, so it isn't implemented here.
+a papercut, is deliberately not a Stop-hook trigger here: it is its own direct
+channel (a standing instruction, no hook required) documented in README.md's
+Papercut channel section, and `collect.py` reads it independently of this
+queue.
 
 ## Why Stop, not SessionEnd
 

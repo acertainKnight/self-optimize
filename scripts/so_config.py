@@ -21,6 +21,7 @@ DEFAULTS = {
     "since_days": 30,
     "sample_caps": {"excerpts": 40, "tokens_per_excerpt": 1500, "total_tokens": 60000},
     "correction_regex": "",  # empty -> collector default
+    "papercuts_path": "",  # empty -> <home>/papercuts.md — see README's Papercut channel
     "harnesses": {name: {"enabled": True, **roots}
                   for name, roots in HARNESS_DEFAULTS.items()},
     "max_budget_tokens": 400000,
@@ -65,6 +66,15 @@ def load_config(state_dir: Path) -> dict:
     if not cfg["report_dir"]:
         cfg["report_dir"] = str(state_dir / "reports")
     return cfg
+
+
+def papercuts_path(cfg: dict) -> Path:
+    """The papercut file this instance reads: cfg["papercuts_path"] if set, else
+    the home directory — the one location every harness can reach, since each
+    harness's own config dir (~/.claude, ~/.codex, ...) is otherwise private to
+    it. See README.md's Papercut channel section for the instruction snippet."""
+    p = cfg.get("papercuts_path") or ""
+    return Path(p).expanduser() if p else Path.home() / "papercuts.md"
 
 
 def harness_roots(cfg: dict) -> dict:
