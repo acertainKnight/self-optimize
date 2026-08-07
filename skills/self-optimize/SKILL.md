@@ -101,6 +101,20 @@ last bullet below), and stop:
    chmod 600. The score renders on the finding in the report — it is judged
    evidence for the human decision, not an auto-gate. Skip the whole step when no
    finding qualifies.
+   **Gym score (evolver rewrites only, judged):** for each finding whose action carries
+   a full rewrite of a skill or agent, resolve its gym id — the `artifacts.json` id
+   without the `artifact:` prefix, so `artifact:skill:foo` is `skill:foo` — and check
+   `python3 SCRIPTS/gym.py status --state STATE --json` for that id. Skip any artifact
+   whose row is not `scorable` (say which reason it gave). For the rest, Write the
+   proposed artifact text to a temp file and run
+   `python3 SCRIPTS/gym.py score --artifact <gym id> --candidate <temp file> --state STATE --out EV/score-<finding-id>.json`
+   (add `--max-budget <N>` if the user passed one). If it exits 2 because no judge
+   backend is configured, skip the whole gym step and tell the user once that
+   `gym.judge.command` is unset in `STATE/config.json` — this plugin ships no default
+   judge, so it will not pick a backend or model on their behalf. Merge the score files
+   into `EV/gym.json` as `{"<finding-id>": <score object>, ...}` and chmod 600. Both
+   numbers render on the finding: prevented failure cases AND preserved working cases,
+   evidence for the human decision, never an auto-gate.
 6. **Report:**
    `python3 SCRIPTS/report.py --evidence EV --state STATE --run-id RUN_ID`
    (analyst tokens come from `EV/analyst_tokens.json` written in step 4; the

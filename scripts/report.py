@@ -86,8 +86,20 @@ def _parse_analyst_tokens(raw: str | None) -> dict | None:
     return out or None
 
 
+def _gym_line(g: dict) -> str:
+    """Both sides of the gym score, always together. A candidate that prevents more
+    corrections by breaking what already worked is a regression, and only showing the
+    number that improved is how a self-improving loop learns to game itself."""
+    if g.get("unscorable"):
+        return f"- gym score: unscorable — {g.get('reason') or 'below the case floor'}"
+    p, w = g.get("prevented") or {}, g.get("preserved") or {}
+    return (f"- gym score: candidate prevented {p.get('n', 0)}/{p.get('of', 0)} failure "
+            f"cases and preserved {w.get('n', 0)}/{w.get('of', 0)} working cases "
+            f"(judged evidence for your decision, not an auto-gate)")
+
+
 def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
-           cumulative=None, shadow=None, roi=None) -> str:
+           cumulative=None, shadow=None, roi=None, gym=None) -> str:
     L = [f"# self-optimize report — {run_id}", ""]
     if verify_rows:
         L += ["## Applied changes: outcomes", "",
@@ -120,6 +132,9 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
             L.append(f"- shadow eval: rewrite would have prevented "
                      f"{sh.get('prevented', 0)}/{sh.get('total', 0)} of its "
                      f"motivating corrections (judged, not measured)")
+        gs = (gym or {}).get(r["id"])
+        if gs:
+            L.append(_gym_line(gs))
         if r.get("prior_rejection"):
             L.append(f"- previously rejected: {r['prior_rejection']} — evidence has changed since")
         if r["action"]["tier"] == "A":
@@ -187,6 +202,17 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
     return "\n".join(L) + "\n"
 
 
+def _optional_json(path: Path):
+    """LLM-step outputs the runner may or may not have written; a malformed one must
+    not take the whole report down."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def _trend(state_dir: Path, limit=5) -> list:
     p = Path(state_dir) / "state" / "metrics.jsonl"
     if not p.exists():
@@ -229,12 +255,8 @@ def main(argv=None):
             tokens = None
     ledger_entries = ledger_mod.load(state / "state" / "ledger.jsonl")
     cumulative = _cumulative_savings(ledger_entries)
-    shadow = None
-    if (evdir / "shadow.json").exists():
-        try:
-            shadow = json.loads((evdir / "shadow.json").read_text())
-        except (json.JSONDecodeError, OSError):
-            shadow = None
+    shadow = _optional_json(evdir / "shadow.json")
+    gym = _optional_json(evdir / "gym.json")
     saved = sum((e.get("rec") or {}).get("delta_tokens") or 0
                 for e in ledger_entries.values() if e.get("status") == "verified")
     spent = sum(tokens.values()) if tokens else 0
@@ -247,7 +269,7 @@ def main(argv=None):
                 continue
     md = render(a.run_id, fdata["findings"], fdata["dropped"], verify_rows,
                 _trend(state), usage, {"analyst_tokens": tokens}, cumulative=cumulative,
-                shadow=shadow, roi={"saved": saved, "spent": spent})
+                shadow=shadow, roi={"saved": saved, "spent": spent}, gym=gym)
     rdir = Path(cfg["report_dir"])
     rdir.mkdir(parents=True, exist_ok=True)
     out = rdir / f"{a.run_id}.md"

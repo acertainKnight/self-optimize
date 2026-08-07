@@ -52,6 +52,31 @@ class TestReport(unittest.TestCase):
                             roi={"saved": 50000, "spent": 12000})
         self.assertNotIn("not yet paying", md2)
 
+    def test_gym_scores_render_both_sides_on_the_finding(self):
+        md = report.render("r", FINDINGS, DROPPED, [], [], USAGE, {},
+                           gym={"aaa111": {"prevented": {"n": 4, "of": 6},
+                                           "preserved": {"n": 5, "of": 5},
+                                           "unscorable": False},
+                                "bbb222": {"unscorable": True,
+                                           "reason": "below case floor: working 1/3"}})
+        self.assertIn("prevented 4/6 failure cases and preserved 5/5 working cases", md)
+        self.assertIn("not an auto-gate", md)
+        self.assertIn("unscorable — below case floor: working 1/3", md)
+
+    def test_gym_json_is_optional_and_survives_corruption(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            state, ev = base / "st", base / "ev"
+            ev.mkdir()
+            (ev / "findings.json").write_text(json.dumps({"findings": FINDINGS, "dropped": DROPPED}))
+            (ev / "usage.json").write_text(json.dumps(USAGE))
+            (ev / "gym.json").write_text("{not json")
+            report.main(["--evidence", str(ev), "--state", str(state), "--run-id", "r1"])
+            md = (state / "reports" / "r1.md").read_text()
+            self.assertIn("## Findings", md)
+            self.assertNotIn("gym score", md)
+
     def test_verify_note_rendered_in_outcomes_table(self):
         rows = [dict(VERIFY[0], note="applied setting still in effect")]
         md = report.render("2026-07-01", [], DROPPED, rows, [], USAGE, {})
