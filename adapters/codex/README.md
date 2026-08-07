@@ -11,18 +11,25 @@ Writes `sessions.json`, `usage.json`, `inventory.json`, `samples.json` (chmod 60
 
 - `state_<N>.sqlite` `threads` table (highest N wins): thread id, cwd, model,
   model_provider, tokens_used, created/updated timestamps. Read-only connection.
+- Per-thread rollout JSONL (`threads.rollout_path`, falling back to a scan of
+  `<codex-home>/sessions/<year>/...` by thread id if that path is stale):
+  user/assistant turns, tool calls, token usage, and corrections. See
+  `parse_rollout()`'s docstring for the record shapes this is grounded in.
 - `config.toml`: model_providers, profiles, mcp_servers, features (via stdlib
   `tomllib`, Python 3.11+). Never reads auth material.
 - `AGENTS.md`, `prompts/*.md`, `skills/**/SKILL.md`.
 
 ## Known limits
 
-- Turn-level content lives in per-thread rollout files (`threads.rollout_path`)
-  whose format has not been observed against a real session yet. Corrections,
-  samples, and waste metrics are therefore emitted empty, and `tokens_used` is
-  carried as `output_tokens` without an input/output split. `usage.parse.
-  collector_limits` records this in-band. Extend `parse_rollout()` against a
-  populated rollout file before trusting those fields.
+- `duplicate_reads` and `permission_stalls` stay zero: the rollout format has
+  no distinct read-tool call or approval/sandbox-denial event to key either
+  signal off of. `usage.parse.collector_limits` records this in-band.
+- Threads whose rollout file can't be found (path stale and no match under
+  `sessions/`) fall back to the sqlite `tokens_used` total as an unsplit
+  `output_tokens` figure — the pre-rollout-parsing behavior.
+- Unknown top-level rollout record types and malformed lines are counted in
+  `usage.parse.skipped_lines`, never fatal — schema drift degrades gracefully
+  rather than crashing the collector.
 - Evidence only: there are no Codex apply templates. Recommendations against a
   Codex config surface are tier-B manual until an allowlisted `config.toml`
   edit template exists.
