@@ -140,6 +140,13 @@ Merged on `main` and working:
   disk as one bounded edit and still refuses in one piece if the file moved on. Over the
   retention cap, variants beaten on BOTH prevented and preserved are evicted first, and
   the live version is never evicted.
+- Pareto selection over that archive: per artifact, the versions no other version beats
+  on both prevented and preserved at once. The front seeds the evolver — it sees the best
+  preventer and the best preserver with their scores and their edits, and is asked what
+  one does that the other lacks, rather than deriving a fresh guess from the live text
+  every run. It may branch from any member. Selection for application stays human: the
+  report prints the front with the trade-off stated in words and nothing promotes a
+  version. Seeding is budgeted — only artifacts with enough recorded friction get a front.
 - Markdown report plus a self-contained HTML dashboard, per-item apply / reject / amend /
   assist, a durable decision record, snapshot-backed applies with a post-write smoke
   check and auto-restore, and one-command rollback.
@@ -173,9 +180,10 @@ today" is done; the rest is open.
   (#31), failure localization (#32), and apply templates for non-Claude config
   surfaces (#33).
 - [#42 — Wave 3: search over variants](https://github.com/acertainKnight/self-optimize/issues/42).
-  The versioned variant archive (#35) ships; Pareto selection over it (#36) is next. The
-  search only becomes worth running once the gym has scored real corpus data, so the
-  archive records what was tried from the first run and the selection reads it later.
+  The versioned variant archive (#35) and Pareto selection over it (#36) both ship. The
+  search is only as good as its scorer, so the front is decision support seeded into one
+  reflective proposal per artifact, not an automatic hill climb: with thin per-artifact
+  case counts, a front is a front over few examples, and a human still picks.
 - [#43 — Wave 4: self-application](https://github.com/acertainKnight/self-optimize/issues/43).
   The analyst instruction files become gym artifacts improved by the same machinery (#37),
   on a deliberately slow timescale.
@@ -218,11 +226,12 @@ one.
 **GEPA** ([arXiv 2507.19457](https://arxiv.org/abs/2507.19457)). Defer, do not reject.
 GEPA evolves prompts by reflecting on execution traces in natural language and keeping a
 Pareto front of candidates, and it beats reinforcement learning with far fewer rollouts.
-Pareto search over variants is the right end state and it is filed as wave 3 (#35, #36).
-It is deferred because a search is only as good as its scorer: with no gym, a Pareto front
-would be a front over noise, and with thin per-artifact case counts it would be a front
-over three examples. The entry condition is the gym scoring real corpus data through at
-least one verified apply cycle.
+The front ships (#35, #36) on the gym's two-sided score, and it is deferred where it
+counts: it seeds one reflective proposal per artifact and renders for a human, rather
+than driving an automatic search. A search is only as good as its scorer, and with thin
+per-artifact case counts a front is a front over few examples. What GEPA gets from many
+rollouts, this gets from one archive of what was already tried, read before the next
+proposal is written.
 
 **Hermes Agent** ([NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)).
 Adopt the triggers and the staging directory; reject the default. Hermes creates skills

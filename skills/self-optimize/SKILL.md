@@ -73,7 +73,11 @@ last bullet below), and stop:
    than 20 sessions, skip transcript-miner and tell the user why ("not enough data
    yet"); if inventory shows zero plugins and zero skills, skip config-auditor
    likewise; if `EV/artifacts.json` is missing or its `artifacts` array is empty, skip
-   evolver ("no artifact activation data yet"). Then launch the surviving analysts in
+   evolver ("no artifact activation data yet"). An artifact with enough recorded
+   friction and two or more scored versions in its archive also carries a `front` block
+   in artifacts.json (the inventory line reports how many: `fronts=<n>`) — that is the
+   evolver's record of what has already been tried, and it may branch from any member.
+   Then launch the surviving analysts in
    parallel with the Agent tool. They are plugin agents restricted to the Read tool and
    carry their own instructions — the invocation prompt is just the file list plus a
    standing constraints instruction. Each analyst reads ONLY its own copies under

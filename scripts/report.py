@@ -8,6 +8,7 @@ from pathlib import Path
 
 import ledger as ledger_mod
 import labels as labels_mod
+import variants
 
 
 def _cell(x) -> str:
@@ -140,8 +141,34 @@ def _ops_block(payload: dict) -> list:
     return L + ["```", ""]
 
 
+def _fronts_block(fronts: dict) -> list:
+    """Per-artifact Pareto front: the candidate versions no other version beats on both
+    sides at once. Rendered as evidence with the trade-off stated, and nothing else —
+    there is no promote button here and no auto-promotion behind it. A two-dimensional
+    score has no single winner, so the loop is not allowed to invent one."""
+    if not fronts:
+        return []
+    L = ["## Variant fronts", "",
+         "Candidate versions already scored on each artifact's cases, with none of them "
+         "beaten on both sides at once. Choosing among them is your call — nothing here "
+         "promotes a version.", ""]
+    for artifact in sorted(fronts):
+        block = fronts[artifact]
+        L += [f"### {_cell(artifact)}", "",
+              "| variant | from | prevented | preserved | edits | proposed as |",
+              "|---|---|---|---|---|---|"]
+        for m in block["members"]:
+            p, w = m["prevented"], m["preserved"]
+            L.append(f"| `{m['variant']}` | {_cell(m.get('parent') or 'live artifact')} | "
+                     f"{p.get('n', 0)}/{p.get('of', 0)} ({p['rate']:.2f}) | "
+                     f"{w.get('n', 0)}/{w.get('of', 0)} ({w['rate']:.2f}) | "
+                     f"{len(m['ops'])} | {_cell(m.get('title') or '-')} |")
+        L += ["", f"Trade-off: {block['trade_off']}", ""]
+    return L
+
+
 def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
-           cumulative=None, shadow=None, roi=None, gym=None, security=None) -> str:
+           cumulative=None, shadow=None, roi=None, gym=None, security=None, fronts=None) -> str:
     L = [f"# self-optimize report — {run_id}", ""]
     if verify_rows:
         L += ["## Applied changes: outcomes", "",
@@ -202,6 +229,7 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
             body = p.get("diff") or p.get("description") or json.dumps(p, indent=1)
             L += ["- manual action:", "", "```", body, "```"]
         L.append("")
+    L += _fronts_block(fronts or {})
     cumulative = cumulative or []
     if trend_rows or cumulative:
         L.append("## Trend")
@@ -329,9 +357,11 @@ def main(argv=None):
                 spent += sum((json.loads(line).get("analyst_tokens") or {}).values())
             except (json.JSONDecodeError, AttributeError, TypeError):
                 continue
+    max_members = int(((cfg.get("gym") or {}).get("front") or {}).get("max_members", 4))
     md = render(a.run_id, fdata["findings"], fdata["dropped"], verify_rows,
                 _trend(state), usage, {"analyst_tokens": tokens}, cumulative=cumulative,
-                shadow=shadow, roi={"saved": saved, "spent": spent}, gym=gym, security=security)
+                shadow=shadow, roi={"saved": saved, "spent": spent}, gym=gym, security=security,
+                fronts=variants.all_fronts(state, max_members))
     rdir = Path(cfg["report_dir"])
     rdir.mkdir(parents=True, exist_ok=True)
     out = rdir / f"{a.run_id}.md"

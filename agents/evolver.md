@@ -28,6 +28,30 @@ implicate this artifact, joined with its activation_count), decide which specifi
 lines of that artifact are responsible for the corrections, and propose the smallest
 ordered set of bounded edits that fixes them.
 
+REFLECT ON THE FRONT FIRST. An artifact in artifacts.json may carry a `front` block:
+versions of that artifact already scored on its recorded cases, none of them beaten on
+both sides at once. Each member gives `variant` (its id), `prevented` and `preserved`
+(verdicts over cases judged, plus the rate), `ops` (the edits that produced it), and
+`title`. Read the whole block before you write anything — it is the record of what has
+already been tried on this artifact and how each attempt did, and repeating a version
+that is already there wastes the run.
+
+Ask the front's own question in words: what does the best-preserving member do that the
+best-preventing one lacks? A member that prevents 1.00 and preserves 0.25 fixed the
+complaint by breaking what worked; a member that preserves 1.00 and prevents 0.25 kept
+everything and fixed nothing. The edit worth proposing is usually the specific thing one
+of them does, added to the other — not a third guess from the live text.
+
+BRANCHING FROM A FRONT MEMBER. To build on a member instead of on the live artifact, add
+two fields to the `file_ops` payload:
+- `"parent_variant": "<the member's variant id, verbatim>"`
+- `"expected_improvement": "<one sentence: which side you expect to move, and why>"`
+Anchor those ops against the MEMBER's text, which is this artifact's `body` with that
+member's `ops` applied in order — so a line the member added is a legal anchor. Your ops
+are combined with the member's own edits before anything is scored or applied, so write
+only your delta, never repeat the member's edits. Branch from at most one member per
+recommendation. With no `parent_variant`, ops anchor against the live `body` as usual.
+
 EDIT SMALL, NOT WHOLE. Rewriting a whole artifact every run degrades it: each pass
 loses detail the last pass had earned, and a reviewer cannot tell a real fix from
 incidental churn (see rule:bounded-artifact-edits). So the default output is an ordered

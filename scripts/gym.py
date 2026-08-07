@@ -306,6 +306,31 @@ def _scorable(entry: dict, counts: dict, floor: int) -> tuple:
     return True, ""
 
 
+# ---------------------------------------------------------------- front seeding
+FRONT_DEFAULTS = {"min_failure_cases": 5, "max_members": 4}
+
+
+def front_context(state, artifact_id: str, cfg: dict):
+    """The Pareto front of this artifact's archived variants, ready to seed an analyst's
+    context — or None when it should not be seeded at all.
+
+    Two gates, both about spend. The artifact needs real friction behind it: at least
+    `gym.front.min_failure_cases` recorded failure cases, since a front over an artifact
+    nobody is fighting with is context paid for and wasted. And the front needs two
+    members, because one version states no trade-off to reflect on.
+    """
+    fcfg = {**FRONT_DEFAULTS, **((cfg.get("gym") or {}).get("front") or {})}
+    failure_cases = len(load_corpus(gym_dir(state), artifact_id)["failure"])
+    if failure_cases < int(fcfg["min_failure_cases"]):
+        return None
+    members = variants.front_members(variants.load(state, artifact_id),
+                                     int(fcfg["max_members"]))
+    if len(members) < 2:
+        return None
+    return {"failure_cases": failure_cases, "members": members,
+            "trade_off": variants.trade_off(members)}
+
+
 # ---------------------------------------------------------------- judge driver
 JUDGE_UNCONFIGURED = """refusing to score: no judge backend is configured.
 

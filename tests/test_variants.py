@@ -5,7 +5,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 import apply as apply_mod
 import dashboard
 import gym
+import inventory
 import ledger
+import report
 import so_config
 import variants
 
@@ -316,6 +318,193 @@ class TestRetention(unittest.TestCase):
                         run_id="newest", cap=2)
         self.assertEqual({v["run_id"] for v in variants.load(self.state, "skill:alpha")},
                          {"keep", "newest"})
+
+
+class TestParetoFront(unittest.TestCase):
+    """The front is the set no other version beats on both sides at once. It is computed
+    on rates, not raw counts, because two candidates for one artifact are not always
+    judged on the same number of cases."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.state = self.tmp / "state"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def add(self, name, score):
+        return variants.record(self.state, "skill:alpha", f"body {name}", score,
+                               ops=[{"op": "add", "anchor": "x", "text": name,
+                                     "motivated_by": ["sample:0"]}],
+                               run_id=name, finding_id=name, cap=0,
+                               provenance={"title": f"proposal {name}"})
+
+    def records(self):
+        return variants.load(self.state, "skill:alpha")
+
+    def test_dominated_versions_are_off_the_front(self):
+        prevent = self.add("prevent", scores(4, 1))
+        preserve = self.add("preserve", scores(1, 4))
+        middle = self.add("middle", scores(2, 2))     # beaten by neither extreme
+        beaten = self.add("beaten", scores(1, 1))     # matched by preserve, beaten on preserved
+        front = variants.pareto_front(self.records())
+        self.assertEqual([v["id"] for v in front],
+                         [prevent["id"], middle["id"], preserve["id"]])
+        self.assertNotIn(beaten["id"], [v["id"] for v in front])
+
+    def test_case_counts_are_weighted_not_compared_raw(self):
+        thin = self.add("thin", scores(3, 3, of=3))       # judged on 3 cases, perfect
+        wide = self.add("wide", scores(4, 4, of=8))       # judged on 8, half right
+        self.assertTrue(variants.pareto_dominates(thin, wide))
+        self.assertEqual([v["id"] for v in variants.pareto_front(self.records())],
+                         [thin["id"]])
+
+    def test_tied_versions_both_stay_on_the_front(self):
+        a = self.add("a", scores(2, 2))
+        b = self.add("b", scores(2, 2))
+        self.assertFalse(variants.pareto_dominates(a, b))
+        self.assertFalse(variants.pareto_dominates(b, a))
+        self.assertEqual({v["id"] for v in variants.pareto_front(self.records())},
+                         {a["id"], b["id"]})
+
+    def test_unscorable_versions_are_never_on_the_front(self):
+        good = self.add("good", scores(2, 2))
+        self.add("blind", scores(0, 0, unscorable=True, reason="below case floor"))
+        self.assertEqual([v["id"] for v in variants.pareto_front(self.records())],
+                         [good["id"]])
+
+    def test_trimming_keeps_both_extremes(self):
+        for i in range(5):
+            self.add(f"v{i}", scores(i, 4 - i))       # a five-point trade-off curve
+        members = variants.front_members(self.records(), max_members=3)
+        self.assertEqual(len(members), 3)
+        self.assertEqual(members[0]["prevented"]["rate"], 1.0)     # best preventer kept
+        self.assertEqual(members[-1]["preserved"]["rate"], 1.0)    # best preserver kept
+
+    def test_members_carry_scores_and_their_edit_history(self):
+        self.add("prevent", scores(4, 1))
+        self.add("preserve", scores(1, 4))
+        members = variants.front_members(self.records())
+        self.assertEqual(len(members), 2)
+        for m in members:
+            self.assertIn("rate", m["prevented"])
+            self.assertIn("rate", m["preserved"])
+            self.assertTrue(m["ops"])
+            self.assertTrue(m["title"])
+
+    def test_trade_off_names_both_ends(self):
+        prevent = self.add("prevent", scores(4, 1))
+        preserve = self.add("preserve", scores(1, 4))
+        line = variants.trade_off(variants.front_members(self.records()))
+        self.assertIn(prevent["id"], line)
+        self.assertIn(preserve["id"], line)
+
+    def test_a_single_version_states_no_trade_off(self):
+        self.add("only", scores(4, 4))
+        self.assertEqual(variants.all_fronts(self.state), {})
+
+
+class TestFrontSeeding(ArchiveCase):
+    """The front seeds the evolver's context, and only above the configured friction
+    threshold — a front over an artifact nobody is fighting with is context spent on
+    nothing."""
+
+    def seed_two_versions(self):
+        for i, text in enumerate(("- read the diff first", "- KEYWORD every time"), start=1):
+            self.run_gate([self.finding([{"op": "add", "anchor": "- then ship",
+                                          "text": text, "motivated_by": ["sample:0"]}],
+                                        fid=f"f{i}", title=f"proposal {i}")],
+                          run_id=f"2026-06-0{i}")
+
+    def inventory_doc(self):
+        return {"skills": [{"id": "skill:alpha", "name": "alpha", "source": "user",
+                            "path": str(self.artifact), "est_context_tokens": 10}],
+                "agents": []}
+
+    def build(self, cfg=None):
+        (self.ev / "activation.json").write_text(json.dumps(
+            {"items": {"skill:alpha": {"count": 9}}}))
+        return inventory.build_artifacts(self.inventory_doc(), self.ev, state=self.state,
+                                         cfg=cfg or self.front_cfg())
+
+    def front_cfg(self, min_failure_cases=4, max_members=4):
+        cfg = json.loads(json.dumps(self.cfg))
+        cfg["gym"]["front"] = {"min_failure_cases": min_failure_cases,
+                               "max_members": max_members}
+        return cfg
+
+    def test_seeded_artifact_carries_at_least_two_versions_with_scores(self):
+        self.seed_two_versions()
+        entry = self.build()["artifacts"][0]
+        front = entry["front"]
+        self.assertGreaterEqual(len(front["members"]), 2)
+        for m in front["members"]:
+            self.assertIn("variant", m)
+            self.assertIn("n", m["prevented"])
+            self.assertIn("n", m["preserved"])
+            self.assertTrue(m["ops"])          # the edit history the evolver reflects on
+        self.assertEqual(front["failure_cases"], 4)
+        self.assertTrue(front["trade_off"])
+
+    def test_below_the_friction_threshold_nothing_is_seeded(self):
+        self.seed_two_versions()
+        entry = self.build(cfg=self.front_cfg(min_failure_cases=99))["artifacts"][0]
+        self.assertNotIn("front", entry)
+
+    def test_a_single_scored_version_seeds_nothing(self):
+        self.run_gate([self.finding([{"op": "add", "anchor": "- then ship", "text": "- one",
+                                      "motivated_by": ["sample:0"]}])])
+        self.assertNotIn("front", self.build()["artifacts"][0])
+
+    def test_no_state_dir_means_no_front_and_no_change(self):
+        self.seed_two_versions()
+        (self.ev / "activation.json").write_text(json.dumps({"items": {}}))
+        entry = inventory.build_artifacts(self.inventory_doc(), self.ev)["artifacts"][0]
+        self.assertNotIn("front", entry)
+
+
+class TestFrontReport(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.state = self.tmp / "state"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def fronts(self):
+        for name, score in (("prevent", scores(4, 1)), ("preserve", scores(1, 4))):
+            variants.record(self.state, "skill:alpha", f"body {name}", score,
+                            ops=[{"op": "add", "anchor": "- then ship", "text": name}],
+                            run_id="2026-06-01", provenance={"title": f"proposal {name}"})
+        return variants.all_fronts(self.state)
+
+    def test_report_renders_the_front_with_its_trade_off(self):
+        fronts = self.fronts()
+        md = report.render("r1", [], {"invalid": 0, "citations": 0, "guard": 0,
+                                      "suppressed": []}, [], [],
+                           {"totals": {"sessions": 1}, "parse": {"skipped_lines": 0}},
+                           {}, fronts=fronts)
+        self.assertIn("## Variant fronts", md)
+        self.assertIn("skill:alpha", md)
+        for member in fronts["skill:alpha"]["members"]:
+            self.assertIn(member["variant"], md)
+        self.assertIn("(1.00)", md)
+        self.assertIn("Trade-off:", md)
+
+    def test_the_front_offers_no_apply_command_and_promotes_nothing(self):
+        md = report.render("r1", [], {"invalid": 0, "citations": 0, "guard": 0,
+                                      "suppressed": []}, [], [],
+                           {"totals": {"sessions": 1}, "parse": {"skipped_lines": 0}},
+                           {}, fronts=self.fronts())
+        section = md.split("## Variant fronts", 1)[1].split("\n## ", 1)[0]
+        self.assertNotIn("/self-optimize apply", section)
+        self.assertIn("your call", section)
+
+    def test_no_archive_means_no_section(self):
+        md = report.render("r1", [], {"invalid": 0, "citations": 0, "guard": 0,
+                                      "suppressed": []}, [], [],
+                           {"totals": {"sessions": 1}, "parse": {"skipped_lines": 0}}, {})
+        self.assertNotIn("Variant fronts", md)
 
 
 class TestViews(ArchiveCase):
