@@ -419,5 +419,168 @@ class TestFileOps(unittest.TestCase):
             self.render([{"op": "delete", "anchor": "- a line"}], path=outside)
 
 
+class TestTomlKeyEdit(unittest.TestCase):
+    TOML = ('# top-level model choice\n'
+            'model = "gpt-5"  # active model\n'
+            'model_provider = "openai"\n'
+            '\n'
+            '[features]\n'
+            'web_search = false  # toggle\n'
+            'other_flag = true\n'
+            '\n'
+            '[mcp_servers.example]\n'
+            'command = "example-mcp"\n')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.codex_home = pathlib.Path(self.tmp.name)
+        (self.codex_home / "config.toml").write_text(self.TOML)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _render(self, key_path, value, harness_roots=None):
+        roots = harness_roots if harness_roots is not None else {"codex": self.codex_home}
+        return templates.render(
+            {"type": "toml_key_edit", "payload": {"key_path": key_path, "value": value}},
+            pathlib.Path("/unused"), harness_roots=roots)
+
+    def test_top_level_scalar_edit_preserves_comments_and_layout(self):
+        edits = self._render(["model"], "gpt-6")
+        path, content = edits[0]
+        self.assertEqual(path, self.codex_home / "config.toml")
+        self.assertIn('model = "gpt-6"  # active model', content)
+        self.assertIn('model_provider = "openai"', content)
+        self.assertIn('[features]\nweb_search = false  # toggle\n', content)
+        self.assertIn('[mcp_servers.example]\ncommand = "example-mcp"', content)
+        self.assertTrue(content.startswith('# top-level model choice\n'))
+
+    def test_nested_features_key_edit(self):
+        edits = self._render(["features", "web_search"], True)
+        content = edits[0][1]
+        self.assertIn("web_search = true  # toggle", content)
+        self.assertIn("other_flag = true", content)
+        self.assertIn('model = "gpt-5"  # active model', content)
+
+    def test_non_allowlisted_key_path_refused(self):
+        with self.assertRaises(ValueError):
+            self._render(["mcp_servers", "example"], {"command": "evil"})
+        with self.assertRaises(ValueError):
+            self._render(["approval_policy"], "never")
+
+    def test_too_deep_key_path_refused(self):
+        with self.assertRaises(ValueError):
+            self._render(["features", "web_search", "sub"], True)
+        with self.assertRaises(ValueError):
+            self._render(["model", "sub"], "x")
+
+    def test_allowlisted_but_absent_key_refused(self):
+        with self.assertRaises(ValueError):
+            self._render(["profile"], "default")   # allowlisted root, absent from the fixture
+
+    def test_missing_codex_home_configured_refused(self):
+        with self.assertRaises(ValueError):
+            self._render(["model"], "gpt-6", harness_roots={})
+        with self.assertRaises(ValueError):
+            templates.render({"type": "toml_key_edit",
+                              "payload": {"key_path": ["model"], "value": "x"}},
+                             pathlib.Path("/unused"))   # harness_roots omitted entirely
+
+    def test_symlinked_config_toml_rejected(self):
+        real = self.codex_home / "real-config.toml"
+        real.write_text(self.TOML)
+        (self.codex_home / "config.toml").unlink()
+        (self.codex_home / "config.toml").symlink_to(real)
+        with self.assertRaises(ValueError):
+            self._render(["model"], "gpt-6")
+
+
+class TestJsoncOps(unittest.TestCase):
+    JSONC = ('{\n'
+             '  // model config\n'
+             '  "model": "anthropic/claude",\n'
+             '  "mcp": {\n'
+             '    "example": { "command": "example-mcp" }\n'
+             '  }\n'
+             '}\n')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.opencode_config = pathlib.Path(self.tmp.name)
+        (self.opencode_config / "opencode.jsonc").write_text(self.JSONC)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _render(self, ops, harness_roots=None):
+        roots = harness_roots if harness_roots is not None else {"opencode": self.opencode_config}
+        return templates.render({"type": "jsonc_ops", "payload": {"ops": ops}},
+                                pathlib.Path("/unused"), harness_roots=roots)
+
+    def test_anchor_edit_preserves_comment_and_other_keys(self):
+        edits = self._render([
+            {"op": "replace", "anchor": '  "model": "anthropic/claude",',
+             "text": '  "model": "anthropic/claude-new",'},
+        ])
+        path, content = edits[0]
+        self.assertEqual(path, self.opencode_config / "opencode.jsonc")
+        self.assertIn("// model config", content)
+        self.assertIn('"model": "anthropic/claude-new",', content)
+        self.assertIn('"example": { "command": "example-mcp" }', content)
+
+    def test_edit_producing_invalid_json_refused(self):
+        with self.assertRaises(ValueError):
+            self._render([
+                {"op": "replace", "anchor": '  "model": "anthropic/claude",',
+                 "text": '  "model": "anthropic/claude"'},   # drops the trailing comma
+            ])
+
+    def test_missing_opencode_config_refused(self):
+        with self.assertRaises(ValueError):
+            self._render([{"op": "delete", "anchor": '  "model": "anthropic/claude",'}],
+                         harness_roots={})
+
+
+class TestAgentsMdOps(unittest.TestCase):
+    BODY = "# Agent notes\n\n- keep responses short\n- cite sources\n"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = pathlib.Path(self.tmp.name)
+        (self.home / "AGENTS.md").write_text(self.BODY)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _render(self, harness, ops, harness_roots=None):
+        roots = harness_roots if harness_roots is not None else {"codex": self.home}
+        return templates.render({"type": "agents_md_ops",
+                                 "payload": {"harness": harness, "ops": ops}},
+                                pathlib.Path("/unused"), harness_roots=roots)
+
+    def test_bullet_op_edit(self):
+        edits = self._render("codex", [
+            {"op": "add", "anchor": "- keep responses short", "text": "- avoid filler"},
+        ])
+        path, content = edits[0]
+        self.assertEqual(path, self.home / "AGENTS.md")
+        self.assertEqual(content, "# Agent notes\n\n- keep responses short\n"
+                                  "- avoid filler\n- cite sources\n")
+
+    def test_unknown_harness_refused(self):
+        with self.assertRaises(ValueError):
+            self._render("cursor", [{"op": "delete", "anchor": "- cite sources"}])
+
+    def test_harness_root_not_configured_refused(self):
+        with self.assertRaises(ValueError):
+            self._render("opencode", [{"op": "delete", "anchor": "- cite sources"}],
+                         harness_roots={"codex": self.home})
+
+    def test_missing_file_refused(self):
+        (self.home / "AGENTS.md").unlink()
+        with self.assertRaises(ValueError):
+            self._render("codex", [{"op": "delete", "anchor": "- cite sources"}])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -386,5 +386,32 @@ class TestBoundedEditPayloads(unittest.TestCase):
         self.assertFalse(synth.guard(mem, DATA, ["/fakehome/mem"]))
 
 
+class TestNonClaudeGuard(unittest.TestCase):
+    def test_toml_key_edit_allowlist(self):
+        ok = {"action": {"type": "toml_key_edit",
+                         "payload": {"key_path": ["features", "web_search"], "value": True}}}
+        bad = {"action": {"type": "toml_key_edit",
+                          "payload": {"key_path": ["mcp_servers", "evil"], "value": {}}}}
+        empty = {"action": {"type": "toml_key_edit", "payload": {"key_path": [], "value": 1}}}
+        self.assertTrue(synth.guard(ok, DATA))
+        self.assertFalse(synth.guard(bad, DATA))
+        self.assertFalse(synth.guard(empty, DATA))
+
+    def test_jsonc_ops_has_no_path_to_confine(self):
+        # jsonc_ops carries no path in its payload at all -- the target is always
+        # opencode's own opencode.jsonc, resolved from harness_roots at render
+        # time, so guard has nothing attacker-controlled left to check here
+        rec = {"action": {"type": "jsonc_ops", "payload": {"ops": []}}}
+        self.assertTrue(synth.guard(rec, DATA))
+
+    def test_agents_md_ops_harness_enum(self):
+        ok = {"action": {"type": "agents_md_ops", "payload": {"harness": "codex", "ops": []}}}
+        bad = {"action": {"type": "agents_md_ops", "payload": {"harness": "cursor", "ops": []}}}
+        missing = {"action": {"type": "agents_md_ops", "payload": {"ops": []}}}
+        self.assertTrue(synth.guard(ok, DATA))
+        self.assertFalse(synth.guard(bad, DATA))
+        self.assertFalse(synth.guard(missing, DATA))
+
+
 if __name__ == "__main__":
     unittest.main()

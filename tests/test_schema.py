@@ -154,6 +154,42 @@ class TestOpSchema(unittest.TestCase):
         self.assertFalse(schema.is_rewrite(ops_rec()["action"]))
 
 
+class TestNonClaudeActionTypes(unittest.TestCase):
+    def _rec(self, action):
+        r = good_rec()
+        r["action"] = action
+        return r
+
+    def test_toml_key_edit_requires_tier_b_and_shape(self):
+        action = {"harness": "codex", "tier": "B", "type": "toml_key_edit",
+                  "payload": {"key_path": ["features", "web_search"], "value": True}}
+        self.assertEqual(schema.validate_rec(self._rec(action)), [])
+        self.assertTrue(any("tier must be B" in e for e in
+                            schema.validate_rec(self._rec({**action, "tier": "A"}))))
+        no_key_path = {**action, "payload": {"value": True}}
+        self.assertTrue(any("key_path" in e for e in schema.validate_rec(self._rec(no_key_path))))
+        no_value = {**action, "payload": {"key_path": ["model"]}}
+        self.assertTrue(any("needs a value" in e for e in schema.validate_rec(self._rec(no_value))))
+
+    def test_jsonc_ops_and_agents_md_ops_shape(self):
+        jsonc_action = {"harness": "opencode", "tier": "B", "type": "jsonc_ops",
+                        "payload": {"ops": [{"op": "add", "anchor": "{", "text": '  "x": 1,',
+                                             "motivated_by": ["sample:0"]}]}}
+        self.assertEqual(schema.validate_rec(self._rec(jsonc_action)), [])
+        empty_ops = {**jsonc_action, "payload": {"ops": []}}
+        self.assertTrue(any("non-empty ops list" in e
+                            for e in schema.validate_rec(self._rec(empty_ops))))
+
+        agents_action = {"harness": "codex", "tier": "B", "type": "agents_md_ops",
+                         "payload": {"harness": "codex",
+                                     "ops": [{"op": "add", "anchor": "# Notes", "text": "- x",
+                                              "motivated_by": ["sample:0"]}]}}
+        self.assertEqual(schema.validate_rec(self._rec(agents_action)), [])
+        bad_harness = {**agents_action,
+                       "payload": {**agents_action["payload"], "harness": "cursor"}}
+        self.assertTrue(any("harness" in e for e in schema.validate_rec(self._rec(bad_harness))))
+
+
 class TestApplyOps(unittest.TestCase):
     BODY = "---\nname: review\n---\n# review\n- run the tests\n- ship it\n"
 

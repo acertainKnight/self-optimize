@@ -11,13 +11,16 @@ HARNESS = "claude-code"
 
 ACTION_TYPES_A = {"setting_change", "frontmatter_edit", "file_create", "file_replace",
                   "file_ops"}
-ACTION_TYPES_B = {"diff", "manual", "retire"}
+# toml_key_edit/jsonc_ops/agents_md_ops: the non-Claude config surfaces (Codex's
+# config.toml, opencode's opencode.jsonc, either harness's AGENTS.md) -- always
+# tier B, human approves each item, never gym-eligible for A like file_ops is.
+ACTION_TYPES_B = {"diff", "manual", "retire", "toml_key_edit", "jsonc_ops", "agents_md_ops"}
 OP_KINDS = {"add", "delete", "replace"}
 # Applicability is a function of action TYPE, not tier: every type machine-applies
 # except manual (hooks/permissions/free-form hand-off, forever a human step).
 # retire is tier B (reversible move to an archive dir, not a plain edit) but still
 # machine-applicable, same as diff.
-APPLICABLE_TYPES = ACTION_TYPES_A | {"diff", "retire"}
+APPLICABLE_TYPES = (ACTION_TYPES_A | ACTION_TYPES_B) - {"manual"}
 CATEGORIES = {"bloat", "model-routing", "skill-edit", "new-skill", "claude-md",
               "hooks", "permissions", "settings", "waste",
               "skill-improve", "new-agent", "new-workflow", "new-plugin", "memory",
@@ -73,18 +76,15 @@ def is_rewrite(action: dict) -> bool:
     return isinstance(p, dict) and p.get("op") == "rewrite"
 
 
-def validate_ops(payload: dict) -> list[str]:
-    """Shape of a file_ops payload: a path plus an ordered list of bounded edits, each
-    naming one exact existing line as its anchor and carrying its own evidence refs.
-    Shape only — whether an anchor actually resolves is decided at apply time against
-    the live file, where a miss or a duplicate refuses the whole set."""
-    if not isinstance(payload, dict):
-        return ["file_ops payload must be an object"]
-    if not isinstance(payload.get("path"), str) or not payload["path"].strip():
-        return ["file_ops payload needs a path"]
-    ops = payload.get("ops")
+def _validate_ops_shape(ops) -> list[str]:
+    """The bounded-edit ops-list check shared by every op-based action type:
+    file_ops (an explicit target path in the payload) and the non-Claude
+    harness-surface types jsonc_ops/agents_md_ops (a fixed target, no path in
+    the payload at all). Shape only — whether an anchor actually resolves is
+    decided at apply time against the live file, where a miss or a duplicate
+    refuses the whole set."""
     if not isinstance(ops, list) or not ops:
-        return ["file_ops payload needs a non-empty ops list"]
+        return ["payload needs a non-empty ops list"]
     errs = []
     for i, op in enumerate(ops):
         if not isinstance(op, dict):
@@ -108,6 +108,16 @@ def validate_ops(payload: dict) -> list[str]:
         if not isinstance(refs, list) or not refs or not all(isinstance(r, str) for r in refs):
             errs.append(f"op {i}: motivated_by must be a non-empty list of evidence refs")
     return errs
+
+
+def validate_ops(payload: dict) -> list[str]:
+    """Shape of a file_ops payload: a path plus an ordered list of bounded edits, each
+    naming one exact existing line as its anchor and carrying its own evidence refs."""
+    if not isinstance(payload, dict):
+        return ["file_ops payload must be an object"]
+    if not isinstance(payload.get("path"), str) or not payload["path"].strip():
+        return ["file_ops payload needs a path"]
+    return _validate_ops_shape(payload.get("ops"))
 
 
 def apply_ops(original: str, ops: list) -> str:
@@ -178,6 +188,28 @@ def validate_rec(rec: dict) -> list[str]:
         if a.get("tier") not in ("A", "B"):
             errs.append("tier must be A or B for file_ops")
         errs += validate_ops(a.get("payload"))
+    elif t in ("jsonc_ops", "agents_md_ops"):
+        if a.get("tier") != "B":
+            errs.append(f"tier must be B for {t}")
+        payload = a.get("payload")
+        if not isinstance(payload, dict):
+            errs.append(f"{t} payload must be an object")
+        else:
+            errs += _validate_ops_shape(payload.get("ops"))
+            if t == "agents_md_ops" and payload.get("harness") not in ("codex", "opencode"):
+                errs.append("agents_md_ops payload needs harness: codex or opencode")
+    elif t == "toml_key_edit":
+        if a.get("tier") != "B":
+            errs.append("tier must be B for toml_key_edit")
+        payload = a.get("payload")
+        if not isinstance(payload, dict):
+            errs.append("toml_key_edit payload must be an object")
+        else:
+            kp = payload.get("key_path")
+            if not isinstance(kp, list) or not kp or not all(isinstance(k, str) for k in kp):
+                errs.append("toml_key_edit payload needs a non-empty key_path list of strings")
+            if "value" not in payload:
+                errs.append("toml_key_edit payload needs a value")
     else:
         want = "A" if t in ACTION_TYPES_A else "B"
         if a.get("tier") != want:

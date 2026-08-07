@@ -11,6 +11,10 @@ import ledger as ledger_mod
 import schema as so_schema
 
 ALLOWED_SETTING_ROOTS = {"skillOverrides", "enabledPlugins", "model", "outputStyle", "effortLevel"}
+# mirrors adapters/claude_code/templates.py's ALLOWED_TOML_ROOTS -- duplicated,
+# not imported, same defense-in-depth reasoning as ALLOWED_SETTING_ROOTS above:
+# an independent copy at each layer so a bug in one can't silently disable both.
+ALLOWED_TOML_ROOTS = {"model", "model_provider", "profile", "features"}
 ORD = {"high": 3, "med": 2, "low": 1}
 
 
@@ -158,6 +162,16 @@ def guard(rec: dict, data_root: Path, extra_roots=None) -> bool:
         return _diff_bounded(p.get("file", ""), data_root, extra_roots)
     if t == "retire":
         return _under(p.get("path", ""), data_root, "skills") or _under(p.get("path", ""), data_root, "agents")
+    if t == "toml_key_edit":
+        kp = p.get("key_path") or []
+        return bool(kp) and kp[0] in ALLOWED_TOML_ROOTS
+    if t == "jsonc_ops":
+        # no path in the payload at all -- always opencode's own opencode.jsonc,
+        # resolved from harness_roots at render time, so there is nothing more
+        # attacker-controlled here for guard to check
+        return True
+    if t == "agents_md_ops":
+        return p.get("harness") in ("codex", "opencode")
     if t == "manual":
         return True  # report-only, never executed
     return False

@@ -5,11 +5,16 @@ actually touches files. manual is never rendered — it has no branch here at al
 import json
 import os
 import re
+import tomllib
 from pathlib import Path
 
 import schema as so_schema
 
 ALLOWED_SETTING_ROOTS = {"skillOverrides", "enabledPlugins", "model", "outputStyle", "effortLevel"}
+# Codex's config.toml top-level/one-level-nested keys a rec may targeted-edit.
+# Deliberately excludes mcp_servers/profiles (structural, not simple toggles)
+# and anything auth-related.
+ALLOWED_TOML_ROOTS = {"model", "model_provider", "profile", "features"}
 KNOWN_MODELS = {"haiku", "sonnet", "opus", "fable", "inherit"}
 
 
@@ -48,6 +53,165 @@ def _in_extra_root(f: Path, extra_roots) -> bool:
         if target == base or target.startswith(base + os.sep):
             return True
     return False
+
+
+def _require_harness_file(root: Path, filename: str) -> Path:
+    """Confine a write to <root>/<filename> -- a non-Claude harness's config
+    surface (Codex's config.toml/AGENTS.md, opencode's opencode.jsonc/AGENTS.md).
+    The root itself may be a symlink (a relocated ~/.codex keeps working); the
+    target file must not be -- mirrors _require_user_md's per-component symlink
+    check, simplified because filename is always a bare name (no subdirs to walk)."""
+    target = Path(os.path.normpath(str(Path(root) / filename)))
+    if target.is_symlink():
+        raise ValueError(f"refusing machine write through symlink: {target}")
+    return target
+
+
+def _strip_jsonc(text: str) -> str:
+    """Strips // and /* */ comments outside string literals, and trailing commas
+    before ] or } -- mirrors adapters/opencode/collect_opencode.py's _strip_jsonc
+    (duplicated, not imported: each adapter surface stays self-contained). Used
+    only to validate a jsonc_ops edit still parses as JSON, never to rewrite it."""
+    out = []
+    in_str = False
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    stripped = "".join(out)
+    return re.sub(r",(\s*[}\]])", r"\1", stripped)
+
+
+_TOML_HEADER_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+_TOML_KEY_LINE_RE = re.compile(r"^(\s*[A-Za-z0-9_-]+\s*=\s*)(.*)$")
+_TOML_KEY_NAME_RE = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=")
+
+
+def _split_toml_value_trailer(s: str) -> tuple:
+    """Splits 'value<trailer>' at the first '#' outside a quoted string, so a
+    literal '#' inside a TOML string value is never mistaken for a comment.
+    <trailer> is returned byte-for-byte (the whitespace run right before '#'
+    plus the comment itself, or "" if there is none) so the caller can splice
+    a new value in without disturbing the original spacing. TOML strings:
+    "..." (backslash-escaped) or '...' (literal, no escapes)."""
+    i, n, quote = 0, len(s), None
+    while i < n:
+        c = s[i]
+        if quote:
+            if quote == '"' and c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+            i += 1
+            continue
+        if c in ('"', "'"):
+            quote = c
+            i += 1
+            continue
+        if c == "#":
+            j = i
+            while j > 0 and s[j - 1] in " \t":
+                j -= 1
+            return s[:j], s[j:]
+        i += 1
+    return s, ""
+
+
+def _toml_encode_scalar(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, str):
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    raise ValueError(f"unsupported TOML value type: {type(value).__name__}")
+
+
+def _toml_set_key(text: str, key_path: list, value) -> str:
+    """Targeted key rewrite: tomllib (stdlib, read-only) parses the file to LOCATE
+    and validate the key path, then the edit happens by replacing just that one
+    line -- everything else (comments, layout, other keys, table order) survives
+    untouched, because this never re-serializes the whole document. Re-parses the
+    result to verify the new value actually landed before returning it.
+    ponytail: rewrites an EXISTING scalar key only (no new-key insertion, no table
+    creation, no [[array-of-tables]] handling) -- covers every key ALLOWED_TOML_ROOTS
+    exposes; extend if a rec ever needs to add a key rather than edit one."""
+    try:
+        doc = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"config.toml is not valid TOML: {e}")
+    node = doc
+    for k in key_path[:-1]:
+        node = node.get(k) if isinstance(node, dict) else None
+        if not isinstance(node, dict):
+            raise ValueError(f"toml table not found: {'.'.join(key_path[:-1])}")
+    key = key_path[-1]
+    if key not in node or isinstance(node[key], (dict, list)):
+        raise ValueError(f"toml key not found or not editable as a scalar: {'.'.join(key_path)}")
+
+    table = ".".join(key_path[:-1])
+    lines = text.split("\n")
+    cur_table, found = "", None
+    for i, line in enumerate(lines):
+        hm = _TOML_HEADER_RE.match(line)
+        if hm:
+            cur_table = hm.group(1).strip()
+            continue
+        if cur_table != table:
+            continue
+        km = _TOML_KEY_NAME_RE.match(line)
+        if not km or km.group(1) != key:
+            continue
+        if found is not None:
+            raise ValueError(f"ambiguous line for toml key {'.'.join(key_path)}")
+        found = i
+    if found is None:
+        raise ValueError(f"could not locate a line for toml key {'.'.join(key_path)}")
+
+    km = _TOML_KEY_LINE_RE.match(lines[found])
+    _, trailer = _split_toml_value_trailer(km.group(2))
+    lines[found] = km.group(1) + _toml_encode_scalar(value) + trailer
+    new_text = "\n".join(lines)
+
+    try:
+        check = tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"toml edit produced invalid TOML: {e}")
+    node = check
+    for k in key_path[:-1]:
+        node = node[k]
+    if node.get(key) != value:
+        raise ValueError("toml edit did not verify — value mismatch after write")
+    return new_text
 
 
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -138,7 +302,7 @@ def _retired_archive_path(f: Path, data_root: Path) -> Path:
     raise ValueError(f"retire only applies under skills/agents, not: {f}")
 
 
-def render(action: dict, data_root: Path, extra_roots=None) -> list:
+def render(action: dict, data_root: Path, extra_roots=None, harness_roots=None) -> list:
     t = action["type"]
     p = action.get("payload", {})
     data_root = Path(data_root)
@@ -238,6 +402,53 @@ def render(action: dict, data_root: Path, extra_roots=None) -> list:
         if archive.exists():
             raise ValueError(f"archive destination already exists: {archive}")
         return [(archive, f.read_text(errors="replace")), (f, None)]
+    if t == "toml_key_edit":
+        # no arbitrary path in the payload at all -- the target is always Codex's
+        # own config.toml, resolved from harness_roots rather than user input
+        kp = p["key_path"]
+        if not kp or kp[0] not in ALLOWED_TOML_ROOTS:
+            raise ValueError(f"toml key path not allowed: {kp[:1]}")
+        if kp[0] == "features":
+            if len(kp) != 2:
+                raise ValueError("features.<key> paths must be exactly one level deep")
+        elif len(kp) != 1:
+            raise ValueError(f"toml key path too deep: {'.'.join(kp)}")
+        root = (harness_roots or {}).get("codex")
+        if root is None:
+            raise ValueError("codex home not configured")
+        f = _require_harness_file(root, "config.toml")
+        if not f.exists():
+            raise ValueError(f"no such file: {f}")
+        return [(f, _toml_set_key(f.read_text(), kp, p["value"]))]
+    if t == "jsonc_ops":
+        # same reasoning as toml_key_edit: fixed target, no path in the payload
+        root = (harness_roots or {}).get("opencode")
+        if root is None:
+            raise ValueError("opencode config not configured")
+        f = _require_harness_file(root, "opencode.jsonc")
+        if not f.exists():
+            raise ValueError(f"no such file: {f}")
+        new_text = so_schema.apply_ops(f.read_text(), p["ops"])
+        try:
+            json.loads(_strip_jsonc(new_text))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"jsonc edit produced invalid JSON: {e}")
+        return [(f, new_text)]
+    if t == "agents_md_ops":
+        # AGENTS.md is the one surface shared by both harnesses, so this is the
+        # only new type that needs a selector -- everything else is prose, so
+        # the same bounded-edit applier file_ops uses for Claude Code's own .md
+        # artifacts applies here unchanged, just against a different root.
+        harness = p.get("harness")
+        if harness not in ("codex", "opencode"):
+            raise ValueError(f"agents_md harness must be codex or opencode, got {harness!r}")
+        root = (harness_roots or {}).get(harness)
+        if root is None:
+            raise ValueError(f"{harness} home not configured")
+        f = _require_harness_file(root, "AGENTS.md")
+        if not f.exists():
+            raise ValueError(f"no such file: {f}")
+        return [(f, so_schema.apply_ops(f.read_text(), p["ops"]))]
     raise ValueError(f"not a renderable action type: {t}")
 
 
@@ -254,6 +465,16 @@ def smoke_check(paths: list, data_root: Path) -> list:
                 json.loads(p.read_text())
             except Exception as e:  # noqa: BLE001 - any parse failure must restore
                 errs.append(f"{p}: invalid JSON ({e})")
+        elif p.name == "config.toml":
+            try:
+                tomllib.loads(p.read_text())
+            except (tomllib.TOMLDecodeError, OSError) as e:
+                errs.append(f"{p}: invalid TOML ({e})")
+        elif p.name == "opencode.jsonc":
+            try:
+                json.loads(_strip_jsonc(p.read_text()))
+            except (json.JSONDecodeError, OSError) as e:
+                errs.append(f"{p}: invalid JSONC ({e})")
         elif p.suffix == ".md":
             try:
                 text = p.read_text()
