@@ -2,7 +2,7 @@
 name: self-optimize
 description: Run the self-optimize loop — mine Claude Code transcripts + config, verify previously applied changes, and produce an evidence-cited optimization report. Also handles apply/reject/rollback subcommands.
 disable-model-invocation: true
-argument-hint: "[--stats-only] [--since YYYY-MM-DD] [--max-budget N] | apply <id[,id...]> | reject <id> [reason] | rollback <id> | decide [path]"
+argument-hint: "[--stats-only] [--since YYYY-MM-DD] [--max-budget N] | apply <id[,id...]> | reject <id> [reason] | rollback <id> | decide [path] | adopt <id>"
 allowed-tools: Bash, Read, Write, Agent
 ---
 
@@ -18,9 +18,9 @@ Definitions used below:
 
 ## Subcommands (run and stop)
 
-If the arguments begin with `apply`, `reject`, `rollback`, or `decide`, run the matching
-command, echo its output verbatim to the user, then regenerate the dashboard (see the
-last bullet below), and stop:
+If the arguments begin with `apply`, `reject`, `rollback`, `decide`, or `adopt`, run the
+matching command, echo its output verbatim to the user, then regenerate the dashboard
+(see the last bullet below), and stop:
 
 - `apply <ids>` → `python3 SCRIPTS/apply.py apply --ids <ids> --state STATE --data-root DATA_ROOT --evidence <newest dir under STATE/evidence>`
 - `reject <id> [reason]` → `python3 SCRIPTS/apply.py reject --id <id> --reason "<reason>" --state STATE`
@@ -29,7 +29,12 @@ last bullet below), and stop:
   (with no path, it picks up the newest `self-optimize-decisions-*.json` from
   `~/Downloads`). Then present each listed assisted-work item to the user and
   implement together upon their approval (tier B stays human-supervised).
-- After any of the four commands above: regenerate the dashboard so it reflects the
+- `adopt <id>` → `python3 SCRIPTS/apply.py adopt --id <id> --state STATE --evidence <newest dir under STATE/evidence>`
+  Only for an enforcement proposal, and only AFTER the user has installed the check
+  themselves — it writes no config, it records the correction counts as they stood at
+  installation so verify.py can score the proposal's prediction on later runs. Never
+  run it on the user's behalf without them saying the check is in place.
+- After any of the five commands above: regenerate the dashboard so it reflects the
   new ledger state — `python3 SCRIPTS/dashboard.py --evidence <newest dir under
   STATE/evidence> --state STATE --run-id <that dir's name>` — and print the
   `DASHBOARD:` line plus an `open <path>` hint.

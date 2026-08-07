@@ -40,6 +40,11 @@ def suppress_reason(rec: dict, entries: dict) -> str | None:
     e = entries.get(rec["id"])
     if not e:
         return None
+    if e["status"] == "adopted":
+        # an installed enforcement check keeps its "adopted" status forever so
+        # verify can re-score its prediction on every later run; re-proposing it
+        # would just ask the user to install what they already installed
+        return "already adopted — the check is installed"
     if e["status"] in APPLIED_LIKE:
         return "already applied"
     if e["status"] == "rejected":

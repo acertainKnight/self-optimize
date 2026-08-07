@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 
+import enforcement
+
 EVIDENCE_VERSION = "1"
 HARNESS = "claude-code"
 
@@ -37,7 +39,19 @@ def rec_id(rec: dict) -> str:
         rec["category"], rec["action"]["type"],
         json.dumps(rec["action"].get("payload", {}), sort_keys=True),
     ])
+    # appended only when an enforcement payload is present: two proposals whose
+    # action is the same hand-off text but whose proposed CHECK differs are
+    # different recommendations, and every id minted before enforcement existed
+    # has to keep hashing to the same value or the whole ledger detaches.
+    if is_enforcement(rec):
+        basis += "|" + json.dumps(rec["enforcement"], sort_keys=True)
     return hashlib.sha256(basis.encode()).hexdigest()[:12]
+
+
+def is_enforcement(rec: dict) -> bool:
+    """True for a finding that proposes a runtime check. These are permanently
+    tier B: never auto-applied, whatever their scores say."""
+    return isinstance(rec, dict) and isinstance(rec.get("enforcement"), dict)
 
 
 def evidence_hash(rec: dict) -> str:
@@ -214,6 +228,21 @@ def validate_rec(rec: dict) -> list[str]:
         want = "A" if t in ACTION_TYPES_A else "B"
         if a.get("tier") != want:
             errs.append(f"tier must be {want} for {t}")
+    if "enforcement" in rec:
+        # Permanently tier B, and permanently a hand-off: the human reads the
+        # proposed check, installs it, and records that with `adopt`. The tier
+        # is pinned here AND refused again in apply.py — a rec can reach the
+        # ledger by other routes (a hand-edited decisions.json amend), and this
+        # is the one property that must hold on every route.
+        if not isinstance(rec["enforcement"], dict):
+            errs.append("enforcement must be an object")
+        else:
+            errs += enforcement.validate(rec["enforcement"])
+        if a.get("tier") != "B":
+            errs.append("enforcement findings are permanently tier B")
+        if t != "manual":
+            errs.append("enforcement findings must be a manual action — the human "
+                        "installs the check")
     if rec["category"] not in CATEGORIES:
         errs.append(f"bad category: {rec['category']}")
     if m.get("key") not in METRIC_KEYS:

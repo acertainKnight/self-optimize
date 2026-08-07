@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+import enforcement
 import ledger as ledger_mod
 import schema as so_schema
 
@@ -77,22 +78,29 @@ def check_citation(ref: str, ev: dict) -> bool:
     return False
 
 
-def _localize_hits(evidence_refs: list, ev: dict, localized: dict) -> list:
-    """Which of localize.json's per-session bisection results this finding's
-    evidence touches, via a direct session: ref or a sample: ref's session field.
-    Advisory supporting evidence only — never validated as a citation itself."""
-    if not localized:
-        return []
+def cited_sessions(evidence_refs: list, ev: dict) -> set:
+    """The distinct sessions a finding's evidence touches, via a direct session:
+    ref or a sample: ref's session field."""
     ids = set()
+    samples = ev.get("samples", {}).get("samples") or []
     for r in evidence_refs:
-        kind, _, rest = r.partition(":")
+        kind, _, rest = str(r).partition(":")
         if kind == "session":
             ids.add(rest)
-        elif kind == "sample" and rest.isdigit():
-            samples = ev.get("samples", {}).get("samples") or []
-            if int(rest) < len(samples):
-                ids.add(samples[int(rest)].get("session"))
-    return [localized[sid] for sid in sorted(ids) if sid in localized]
+        elif kind == "sample" and rest.isdigit() and int(rest) < len(samples):
+            ids.add(samples[int(rest)].get("session"))
+    ids.discard(None)
+    return ids
+
+
+def _localize_hits(evidence_refs: list, ev: dict, localized: dict) -> list:
+    """Which of localize.json's per-session bisection results this finding's
+    evidence touches. Advisory supporting evidence only — never validated as a
+    citation itself."""
+    if not localized:
+        return []
+    return [localized[sid] for sid in sorted(cited_sessions(evidence_refs, ev))
+            if sid in localized]
 
 
 def _under(f: str, data_root: Path, sub: str) -> bool:
@@ -245,6 +253,15 @@ def synthesize(analyst_recs: list, ev: dict, led_entries: dict, data_root: Path,
             continue
         if not guard(rec, data_root, extra_roots):
             dropped["guard"] += 1
+            continue
+        # "durable" is machine-checked, not taken on the analyst's word: a check
+        # that blocks a tool call is proposed off a correction that recurred
+        # across sessions, never off one bad afternoon. Counted as invalid —
+        # the payload claims a property its own citations don't support.
+        if (so_schema.is_enforcement(rec)
+                and len(cited_sessions(rec["evidence_refs"], ev))
+                < enforcement.MIN_SESSIONS):
+            dropped["invalid"] += 1
             continue
         rec["id"] = so_schema.rec_id(rec)
         rec["evidence_hash"] = so_schema.evidence_hash(rec)
