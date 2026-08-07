@@ -38,8 +38,11 @@ last bullet below), and stop:
 
 1. **Collect (deterministic, no LLM):**
    `python3 SCRIPTS/collect.py --data-root DATA_ROOT --state STATE --out EV --run-id RUN_ID` (add `--since <ISO>` if the user passed `--since`, and `--max-budget <N>` if the user passed `--max-budget`; if it exits 2, the budget is too small to sample anything useful — show the refusal message and stop rather than retrying), then
-   `python3 SCRIPTS/inventory.py --data-root DATA_ROOT --state STATE --out EV --rules ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json`.
-   Print both summary lines. If `STATE/config.json` did not exist before this run, tell
+   `python3 SCRIPTS/inventory.py --data-root DATA_ROOT --state STATE --out EV --rules ${CLAUDE_PLUGIN_ROOT}/adapters/claude_code/rules.json`, then
+   `python3 SCRIPTS/gym.py update --evidence EV --state STATE --run-id RUN_ID` (derives
+   the eval-gym registry from this run's inventory and accrues its graded cases; add a
+   second `--evidence <dir>` for each additional harness pack collected by an adapter).
+   Print all three summary lines. If `STATE/config.json` did not exist before this run, tell
    the user it was created with defaults, and summarize what was read (session count,
    window) before continuing.
 2. **`--stats-only`?** Print the summaries and the EV path, remind the user this cost

@@ -330,6 +330,8 @@ tier-B items you selected for assisted work — those are never run automaticall
 them together with the agent afterward. Each decide run logs what happened to
 `<config-dir>/self-optimize/state/decisions/`.
 
+### 
+
 ### Instances
 
 The config dir is resolved per running instance: `$CLAUDE_CONFIG_DIR` if set, else
@@ -351,6 +353,9 @@ first, that is one corpus and one ledger. Run the loop once, from either instanc
 | max_budget_tokens | 400000 | default `--max-budget`; sample caps shrink to fit, and collect.py refuses (exit 2) runs too small to sample usefully |
 | retain_runs | 10 | evidence dirs kept |
 | verify.min_sessions / min_rel_change | 10 / 0.10 | verification floors |
+| gym.min_cases_per_side | 3 | fewer cases than this on either side and the artifact is reported unscorable |
+| gym.max_cases_per_side | 20 | per-artifact corpus cap; older cases age out FIFO |
+| gym.retire_after_absent_runs | 3 | consecutive runs an artifact can be missing from the inventory before it is retired |
 
 ### Cost
 

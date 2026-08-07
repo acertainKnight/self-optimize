@@ -157,6 +157,69 @@ class TestPack(unittest.TestCase):
             collect.scale_caps_to_budget(dict(CAPS), 9000)
         self.assertEqual(cm.exception.code, 2)
 
+    def test_sessions_carry_their_own_activation_for_the_gym(self):
+        pack = collect.collect_corpus(self.root, None, ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
+        self.assertEqual(pack["sessions"][0]["activation"]["skill:tdd"], 2)
+        # and it survives into the written pack
+        out = pathlib.Path(self.tmp) / "ev3"
+        collect.write_pack(out, pack)
+        written = json.loads((out / "sessions.json").read_text())["sessions"][0]
+        self.assertIn("skill:tdd", written["activation"])
+
+    def test_working_excerpts_only_from_sessions_with_no_correction(self):
+        root = pathlib.Path(self.tmp) / "clean"
+        (root / "projects" / "-clean").mkdir(parents=True)
+        lines = [
+            json.dumps({"type": "user", "uuid": "u1", "timestamp": "2026-06-21T10:00:00Z",
+                        "cwd": "/tmp/clean",
+                        "message": {"role": "user", "content": "write the changelog entry"}}),
+            json.dumps({"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+                        "timestamp": "2026-06-21T10:00:05Z", "attributionSkill": "tdd",
+                        "message": {"role": "assistant", "model": "m",
+                                    "usage": {"input_tokens": 5, "output_tokens": 5},
+                                    "content": [{"type": "text",
+                                                 "text": "Added it under Unreleased."}]}}),
+            json.dumps({"type": "user", "uuid": "u2", "parentUuid": "a1",
+                        "timestamp": "2026-06-21T10:01:00Z",
+                        "message": {"role": "user", "content": "thanks, ship it"}}),
+        ]
+        (root / "projects" / "-clean" / "s.jsonl").write_text("\n".join(lines) + "\n")
+        pack = collect.collect_corpus(root, None, ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
+        self.assertEqual(len(pack["working"]), 1)
+        w = pack["working"][0]
+        self.assertEqual(w["kind"], "working")
+        self.assertEqual(w["user_text"], "write the changelog entry")
+        self.assertEqual(w["assistant_text"], "Added it under Unreleased.")
+        self.assertNotIn("_working", pack["sessions"][0])
+        # the corrected fixture sessions contribute nothing to the working side
+        corrected = collect.collect_corpus(self.root, None, ["*"], [],
+                                           collect.DEFAULT_CORRECTION_RE, CAPS)
+        self.assertEqual(corrected["working"], [])
+        out = pathlib.Path(self.tmp) / "ev4"
+        collect.write_pack(out, pack)
+        doc = json.loads((out / "working.json").read_text())
+        self.assertEqual(doc["schema_version"], "1")
+        self.assertEqual(len(doc["samples"]), 1)
+        self.assertEqual((out / "working.json").stat().st_mode & 0o777, 0o600)
+
+    def test_working_excerpts_are_redacted(self):
+        root = pathlib.Path(self.tmp) / "secret"
+        (root / "projects" / "-secret").mkdir(parents=True)
+        lines = [
+            json.dumps({"type": "user", "uuid": "u1", "timestamp": "2026-06-21T10:00:00Z",
+                        "message": {"role": "user",
+                                    "content": "use sk-ant-api03-FAKEFAKEFAKEFAKEFAKE for the call"}}),
+            json.dumps({"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+                        "timestamp": "2026-06-21T10:00:05Z",
+                        "message": {"role": "assistant", "model": "m",
+                                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                                    "content": [{"type": "text", "text": "Done."}]}}),
+        ]
+        (root / "projects" / "-secret" / "s.jsonl").write_text("\n".join(lines) + "\n")
+        pack = collect.collect_corpus(root, None, ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
+        self.assertIn("[REDACTED:", pack["working"][0]["user_text"])
+        self.assertNotIn("sk-ant-api03-FAKEFAKEFAKEFAKEFAKE", pack["working"][0]["user_text"])
+
     def test_metrics_row_honest_additions(self):
         pack = collect.collect_corpus(self.root, None, ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
         row = collect.metrics_row("r", pack)

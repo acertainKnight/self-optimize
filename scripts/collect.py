@@ -19,6 +19,12 @@ REJECTION_RE = re.compile(
     r"(?i)(user (declined|doesn'?t want)|permission.{0,30}denied|rejected this)")
 REVERT_RE = re.compile(r"git\s+(revert\b|reset\s+--hard|checkout\s+--)")
 EDIT_TOOLS = ("Edit", "Write", "NotebookEdit")
+# working excerpts: ask/answer pairs from sessions that drew no correction, kept for
+# the eval gym's "preserved" side. Two per session is enough to characterise a
+# session and keeps working.json small; the gym caps again per artifact.
+WORKING_PER_SESSION = 2
+WORKING_USER_CHARS = 1200
+WORKING_ASSISTANT_CHARS = 600
 
 
 def iter_records(path: Path, counters: dict):
@@ -64,8 +70,10 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
          "sidechain_output_tokens": 0, "models": {}, "corrections": [],
          "duplicate_reads": 0, "repeated_calls": 0, "permission_stalls": 0,
          "revert_events": 0, "reasks": 0, "ended_on_correction": 0,
-         "redactions": 0, "activation": Counter(), "_stall_details": []}
+         "redactions": 0, "activation": Counter(), "_stall_details": [],
+         "_working": []}
     read_paths, call_keys = Counter(), Counter()
+    pending_ask = None   # (ts, text) of the last non-correction user ask
     texts_by_uuid = {}  # uuid -> (role, text sample) for parentUuid adjacency
     tool_ids = {}       # tool_use id -> (name, trimmed detail) for stall attribution
     user_texts = []     # real user asks this session, for re-ask detection
@@ -95,6 +103,15 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
                                           msg.get("model") if rtype == "assistant" else None)
 
         if rtype == "assistant":
+            if pending_ask and not side and len(s["_working"]) < WORKING_PER_SESSION:
+                atext = _text(msg).strip()
+                if atext:
+                    ask_ts, ask_text = pending_ask
+                    ut, r1 = redact.scrub(ask_text[:WORKING_USER_CHARS])
+                    at, r2 = redact.scrub(atext[:WORKING_ASSISTANT_CHARS])
+                    s["redactions"] += r1 + r2
+                    s["_working"].append({"ts": ask_ts, "user_text": ut, "assistant_text": at})
+                    pending_ask = None
             u = msg.get("usage") or {}
             s["input_tokens"] += u.get("input_tokens", 0) or 0
             out = u.get("output_tokens", 0) or 0
@@ -149,6 +166,8 @@ def parse_session(path: Path, project: str, correction_re, counters: dict) -> di
             if text:
                 user_texts.append(text[:400])
                 last_user_was_correction = bool(correction_re.search(text[:200]))
+                if not last_user_was_correction:
+                    pending_ask = (ts, text)
             if text and correction_re.search(text[:200]):
                 prior, prior_model = "", None
                 parent = rec.get("parentUuid")
@@ -199,7 +218,7 @@ import schema as so_schema
 
 def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, caps) -> dict:
     counters = {"skipped_lines": 0, "files": 0}
-    sessions, act, samples, dup_paths, corr_by_model = [], {}, [], {}, {}
+    sessions, act, samples, working, dup_paths, corr_by_model = [], {}, [], [], {}, {}
     stall_tools, stall_examples = Counter(), []
     proj_root = Path(data_root) / "projects"
     for f in sorted(proj_root.glob("*/*.jsonl")) if proj_root.exists() else []:
@@ -212,7 +231,9 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
         s = parse_session(f, project, correction_re, counters)
         if since_iso and (s["started_at"] or "") < since_iso:
             continue
-        for item, n in s.pop("activation").items():
+        # activation stays on the session record too: the eval gym attaches cases to
+        # the artifacts that were active in that specific session
+        for item, n in s["activation"].items():
             e = act.setdefault(item, {"count": 0, "last_used": None, "projects": []})
             e["count"] += n
             e["last_used"] = max(e["last_used"] or "", s["ended_at"] or "")
@@ -233,6 +254,13 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
             if c.get("model"):
                 corr_by_model[c["model"]] = corr_by_model.get(c["model"], 0) + 1
         s["corrections_count"] = len(corrs)
+        # a session with any correction is not evidence that anything worked, so its
+        # excerpts are dropped rather than stored as working cases
+        excerpts = s.pop("_working", [])
+        for w in (excerpts if not corrs else []):
+            working.append({"session": s["id"], "project": project, "ts": w["ts"],
+                            "kind": "working", "user_text": w["user_text"],
+                            "assistant_text": w["assistant_text"]})
         sessions.append(s)
 
     samples = _cap_samples(samples, sessions, caps)
@@ -276,7 +304,7 @@ def collect_corpus(data_root: Path, since_iso, include, exclude, correction_re, 
                              "rate_per_session": (corr_total / n) if n else 0.0},
              "parse": {**counters, "redactions": sum(s.get("redactions", 0) for s in sessions)}}
     return {"sessions": sessions, "usage": usage,
-            "activation": {"items": act}, "samples": samples}
+            "activation": {"items": act}, "samples": samples, "working": working}
 
 
 def _cap_samples(samples, sessions, caps):
@@ -367,6 +395,8 @@ def write_pack(out_dir: Path, pack: dict, constraints: dict | None = None) -> No
     (out_dir / "usage.json").write_text(json.dumps(_stamp(pack["usage"]), indent=1))
     (out_dir / "activation.json").write_text(json.dumps(_stamp(pack["activation"]), indent=1))
     (out_dir / "samples.json").write_text(json.dumps(_stamp({"samples": pack["samples"]}), indent=1))
+    (out_dir / "working.json").write_text(
+        json.dumps(_stamp({"samples": pack.get("working", [])}), indent=1))
     if constraints is not None:
         (out_dir / "constraints.json").write_text(json.dumps(constraints, indent=1))
     for f in out_dir.glob("*.json"):
