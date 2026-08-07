@@ -85,5 +85,102 @@ class TestSchema(unittest.TestCase):
             ["/fakehome/.claude/memory"])
 
 
+def ops_rec(ops=None, tier="A"):
+    return {
+        "title": "Anchor the test rule in the review skill",
+        "category": "skill-improve",
+        "evidence_refs": ["artifact:skill:review"],
+        "impact": {"ordinal": "med"},
+        "risk": "low — one bullet changes",
+        "metric": {"key": "correction_rate", "direction": "down", "scope": "global"},
+        "action": {"harness": "claude-code", "tier": tier, "type": "file_ops",
+                   "payload": {"path": "/fakehome/.claude/skills/review/SKILL.md",
+                               "ops": ops if ops is not None else [
+                                   {"op": "replace", "anchor": "- run the tests",
+                                    "text": "- run `python3 -m unittest` before committing",
+                                    "motivated_by": ["sample:0"]}]}},
+    }
+
+
+class TestOpSchema(unittest.TestCase):
+    def test_valid_file_ops_rec_passes_at_either_tier(self):
+        self.assertEqual(schema.validate_rec(ops_rec()), [])
+        self.assertEqual(schema.validate_rec(ops_rec(tier="B")), [])
+        r = ops_rec(); r["action"]["tier"] = "C"
+        self.assertTrue(any("tier must be A or B" in e for e in schema.validate_rec(r)))
+
+    def test_malformed_ops_are_rejected(self):
+        cases = {
+            "op must be": [{"op": "rewrite", "anchor": "- x", "text": "y",
+                            "motivated_by": ["sample:0"]}],
+            "anchor must be a non-empty": [{"op": "delete", "anchor": "  ",
+                                            "motivated_by": ["sample:0"]}],
+            "anchor must be a single line": [{"op": "delete", "anchor": "- x\n- y",
+                                              "motivated_by": ["sample:0"]}],
+            "delete carries no text": [{"op": "delete", "anchor": "- x", "text": "y",
+                                        "motivated_by": ["sample:0"]}],
+            "needs non-empty text": [{"op": "add", "anchor": "- x", "text": "",
+                                      "motivated_by": ["sample:0"]}],
+            "motivated_by must be": [{"op": "add", "anchor": "- x", "text": "y"}],
+        }
+        for want, ops in cases.items():
+            with self.subTest(want=want):
+                errs = schema.validate_rec(ops_rec(ops))
+                self.assertTrue(any(want in e for e in errs), errs)
+        self.assertTrue(any("non-empty ops list" in e for e in schema.validate_rec(ops_rec([]))))
+
+    def test_rewrite_payload_is_pinned_to_tier_b(self):
+        r = ops_rec()
+        r["action"]["type"] = "file_replace"
+        r["action"]["payload"] = {"op": "rewrite", "path": "/fakehome/.claude/skills/r/SKILL.md",
+                                  "content": "---\nname: r\n---\nbody\n"}
+        self.assertTrue(any("tier must be B" in e for e in schema.validate_rec(r)))
+        r["action"]["tier"] = "B"
+        self.assertEqual(schema.validate_rec(r), [])
+        self.assertTrue(schema.is_rewrite(r["action"]))
+        self.assertFalse(schema.is_rewrite(ops_rec()["action"]))
+
+
+class TestApplyOps(unittest.TestCase):
+    BODY = "---\nname: review\n---\n# review\n- run the tests\n- ship it\n"
+
+    def test_replace_add_and_delete(self):
+        out = schema.apply_ops(self.BODY, [
+            {"op": "replace", "anchor": "- run the tests", "text": "- run the full suite"},
+            {"op": "add", "anchor": "- run the full suite", "text": "- read the diff\n- then ship"},
+            {"op": "delete", "anchor": "- ship it"},
+        ])
+        self.assertEqual(out, "---\nname: review\n---\n# review\n- run the full suite\n"
+                              "- read the diff\n- then ship\n")
+
+    def test_untouched_bytes_survive_verbatim(self):
+        self.assertEqual(schema.apply_ops(self.BODY, [{"op": "delete", "anchor": "- ship it"}]),
+                         "---\nname: review\n---\n# review\n- run the tests\n")
+        self.assertEqual(schema.apply_ops(self.BODY, [
+            {"op": "add", "anchor": "- ship it", "text": "- and tell someone"}]),
+            self.BODY + "- and tell someone\n")
+
+    def test_ambiguous_anchor_refuses(self):
+        with self.assertRaises(ValueError) as cm:
+            schema.apply_ops("- x\n- dup\n- dup\n", [{"op": "delete", "anchor": "- dup"}])
+        self.assertIn("ambiguous anchor", str(cm.exception))
+
+    def test_missing_anchor_refuses(self):
+        with self.assertRaises(ValueError) as cm:
+            schema.apply_ops(self.BODY, [{"op": "replace", "anchor": "- run the tests ",
+                                          "text": "x"}])
+        self.assertIn("anchor not found", str(cm.exception))
+
+    def test_reapplying_the_same_ops_refuses(self):
+        for ops in ([{"op": "replace", "anchor": "- run the tests", "text": "- run all tests"}],
+                    [{"op": "delete", "anchor": "- ship it"}],
+                    [{"op": "add", "anchor": "- ship it", "text": "- and tell someone"}]):
+            with self.subTest(op=ops[0]["op"]):
+                once = schema.apply_ops(self.BODY, ops)
+                with self.assertRaises(ValueError) as cm:
+                    schema.apply_ops(once, ops)
+                self.assertIn("already applied", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

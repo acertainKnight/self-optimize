@@ -317,5 +317,60 @@ class TestTemplates(unittest.TestCase):
         self.assertIn("invalid JSON", errs[0])
 
 
+class TestFileOps(unittest.TestCase):
+    BODY = "---\nname: helper\nmodel: opus\n---\n# helper\n- run the tests\n- ship it\n"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        (self.root / "agents").mkdir()
+        self.agent = self.root / "agents" / "helper.md"
+        self.agent.write_text(self.BODY)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def render(self, ops, path=None, **kw):
+        return templates.render({"type": "file_ops",
+                                 "payload": {"path": str(path or self.agent), "ops": ops}},
+                                self.root, **kw)
+
+    def test_ops_edit_only_their_anchored_lines(self):
+        edits = self.render([
+            {"op": "replace", "anchor": "- run the tests", "text": "- run the whole suite"},
+            {"op": "add", "anchor": "# helper", "text": "Read the diff first."},
+        ])
+        self.assertEqual(edits[0][0], self.agent)
+        self.assertEqual(edits[0][1], "---\nname: helper\nmodel: opus\n---\n# helper\n"
+                                      "Read the diff first.\n- run the whole suite\n- ship it\n")
+        self.assertEqual(self.agent.read_text(), self.BODY)   # render never writes
+
+    def test_ambiguous_and_missing_anchors_refuse(self):
+        self.agent.write_text(self.BODY + "- run the tests\n")
+        with self.assertRaises(ValueError) as cm:
+            self.render([{"op": "delete", "anchor": "- run the tests"}])
+        self.assertIn("ambiguous anchor", str(cm.exception))
+        with self.assertRaises(ValueError) as cm:
+            self.render([{"op": "delete", "anchor": "- no such line"}])
+        self.assertIn("anchor not found", str(cm.exception))
+
+    def test_nonexistent_target_and_extra_roots_refuse(self):
+        with self.assertRaises(ValueError):
+            self.render([{"op": "delete", "anchor": "- x"}], path=self.root / "agents" / "ghost.md")
+        with tempfile.TemporaryDirectory() as mem:
+            note = pathlib.Path(mem) / "note.md"
+            note.write_text("- a line\n")
+            with self.assertRaises(ValueError) as cm:   # memory stays create-only
+                self.render([{"op": "delete", "anchor": "- a line"}], path=note,
+                            extra_roots=[mem])
+            self.assertIn("create new files only", str(cm.exception))
+
+    def test_path_outside_sanctioned_roots_refuses(self):
+        outside = self.root.parent / "elsewhere.md"
+        outside.write_text("- a line\n")
+        with self.assertRaises(ValueError):
+            self.render([{"op": "delete", "anchor": "- a line"}], path=outside)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -136,6 +136,12 @@ def guard(rec: dict, data_root: Path, extra_roots=None) -> bool:
     if t == "frontmatter_edit":
         return ((_under(p.get("file", ""), data_root, "skills") or _under(p.get("file", ""), data_root, "agents"))
                 and p.get("key") in {"model", "disable-model-invocation", "description"})
+    if t == "file_ops":
+        # no extra-root branch: bounded edits only ever touch an EXISTING artifact,
+        # and memory notes stay create-only
+        f = p.get("path", "")
+        return (str(f).endswith(".md")
+                and any(_under(f, data_root, sub) for sub in ("skills", "agents", "workflows")))
     if t in ("file_create", "file_replace"):
         f = p.get("path", "")
         if not str(f).endswith(".md"):
@@ -149,6 +155,32 @@ def guard(rec: dict, data_root: Path, extra_roots=None) -> bool:
     if t == "manual":
         return True  # report-only, never executed
     return False
+
+
+FULL_BODY_TYPES = {"file_create", "file_replace"}
+
+
+def rewrite_declared(rec: dict) -> bool:
+    """Evolver payloads only. A recommendation that hands over a whole new artifact
+    body must declare itself with `op: "rewrite"`; the default path is the bounded
+    `file_ops` edit. Repeated whole-file rewrites are how an artifact collapses over
+    successive runs, so an undeclared rewrite is a legacy payload and gets dropped —
+    a declared one is allowed, and schema.validate_rec pins it to tier B."""
+    a = rec["action"]
+    if rec.get("category") != "skill-improve" or a.get("type") not in FULL_BODY_TYPES:
+        return True
+    return so_schema.is_rewrite(a)
+
+
+def op_refs(rec: dict) -> list:
+    """The per-op `motivated_by` refs. Every operation carries its own provenance, so
+    they are machine-checked exactly like the top-level evidence_refs."""
+    a = rec["action"]
+    p = a.get("payload") or {}
+    if a.get("type") != "file_ops" or not isinstance(p.get("ops"), list):
+        return []
+    return [r for op in p["ops"] if isinstance(op, dict)
+            for r in (op.get("motivated_by") or []) if isinstance(r, str)]
 
 
 def tier1_delta(rec: dict, ev: dict):
@@ -181,7 +213,11 @@ def synthesize(analyst_recs: list, ev: dict, led_entries: dict, data_root: Path,
         if not isinstance(rec, dict) or so_schema.validate_rec(rec):
             dropped["invalid"] += 1
             continue
-        failed_refs = [r for r in rec["evidence_refs"] if not check_citation(r, ev)]
+        if not rewrite_declared(rec):
+            dropped["invalid"] += 1
+            continue
+        refs = dict.fromkeys(rec["evidence_refs"] + op_refs(rec))
+        failed_refs = [r for r in refs if not check_citation(r, ev)]
         if failed_refs:
             dropped["citations"] += 1
             dropped["citation_detail"].append({"analyst": src, "title": rec.get("title", ""),

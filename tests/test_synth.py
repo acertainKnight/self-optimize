@@ -278,5 +278,71 @@ class TestSynth(unittest.TestCase):
         self.assertEqual(mode, 0o600)
 
 
+OPS_EV = dict(EV, artifacts={"artifacts": [{"id": "artifact:agent:helper"}]})
+
+
+def ops_rec():
+    return {"title": "Anchor the review rule", "category": "skill-improve",
+            "evidence_refs": ["artifact:agent:helper"],
+            "impact": {"ordinal": "med"}, "risk": "low",
+            "metric": {"key": "correction_rate", "direction": "down", "scope": "global"},
+            "action": {"harness": "claude-code", "tier": "A", "type": "file_ops",
+                       "payload": {"path": "/fakehome/.claude/agents/helper.md",
+                                   "ops": [{"op": "replace", "anchor": "- run the tests",
+                                            "text": "- run the whole suite",
+                                            "motivated_by": ["sample:0"]}]}}}
+
+
+def rewrite_rec(marked=True):
+    payload = {"path": "/fakehome/.claude/agents/helper.md", "content": "---\nname: h\n---\nnew\n"}
+    if marked:
+        payload["op"] = "rewrite"
+    return {"title": "Restructure helper", "category": "skill-improve",
+            "evidence_refs": ["artifact:agent:helper"],
+            "impact": {"ordinal": "med"}, "risk": "structural — sections reordered",
+            "metric": {"key": "correction_rate", "direction": "down", "scope": "global"},
+            "action": {"harness": "claude-code", "tier": "B" if marked else "A",
+                       "type": "file_replace", "payload": payload}}
+
+
+class TestBoundedEditPayloads(unittest.TestCase):
+    def test_file_ops_finding_survives_synthesis(self):
+        findings, dropped = synth.synthesize([ops_rec()], OPS_EV, {}, DATA)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["action"]["type"], "file_ops")
+        self.assertEqual(dropped["invalid"], 0)
+
+    def test_legacy_unmarked_rewrite_is_rejected(self):
+        findings, dropped = synth.synthesize([rewrite_rec(marked=False)], OPS_EV, {}, DATA)
+        self.assertEqual(findings, [])
+        self.assertEqual(dropped["invalid"], 1)
+
+    def test_declared_rewrite_is_kept_at_tier_b(self):
+        findings, _ = synth.synthesize([rewrite_rec()], OPS_EV, {}, DATA)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["action"]["tier"], "B")
+
+    def test_per_op_provenance_is_machine_checked(self):
+        r = ops_rec()
+        r["action"]["payload"]["ops"][0]["motivated_by"] = ["sample:99"]
+        findings, dropped = synth.synthesize([r], OPS_EV, {}, DATA)
+        self.assertEqual(findings, [])
+        self.assertEqual(dropped["citation_detail"][0]["failed_refs"], ["sample:99"])
+
+    def test_guard_confines_file_ops_paths(self):
+        ok = ops_rec()
+        outside = ops_rec()
+        outside["action"]["payload"]["path"] = "/etc/cron.d/x.md"
+        not_md = ops_rec()
+        not_md["action"]["payload"]["path"] = "/fakehome/.claude/agents/helper.txt"
+        self.assertTrue(synth.guard(ok, DATA))
+        self.assertFalse(synth.guard(outside, DATA))
+        self.assertFalse(synth.guard(not_md, DATA))
+        # memory notes stay create-only: no bounded edits of an existing note
+        mem = ops_rec()
+        mem["action"]["payload"]["path"] = "/fakehome/mem/note.md"
+        self.assertFalse(synth.guard(mem, DATA, ["/fakehome/mem"]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -170,6 +170,15 @@ def render(action: dict, data_root: Path, extra_roots=None) -> list:
         if not f.exists():
             raise ValueError(f"cannot replace nonexistent file: {f}")
         return [(f, p["content"])]
+    if t == "file_ops":
+        f = Path(p["path"]).expanduser()
+        if _require_user_md(f, data_root, extra_roots):
+            # a bounded edit is still an edit of existing text, and memory notes are
+            # create-only for the same injection-amplifier reason file_replace is
+            raise ValueError("file_ops not permitted in extra roots (memory) — create new files only")
+        if not f.exists():
+            raise ValueError(f"cannot edit nonexistent file: {f}")
+        return [(f, so_schema.apply_ops(f.read_text(), p["ops"]))]
     if t == "diff":
         # BOUND: the only place a machine write may leave the sanctioned roots.
         # basename=="CLAUDE.md" -> follow to its realpath, but refuse unless the
