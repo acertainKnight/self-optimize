@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import enforcement
+import selfsignal
 
 EVIDENCE_VERSION = "1"
 HARNESS = "claude-code"
@@ -201,6 +202,15 @@ def validate_rec(rec: dict) -> list[str]:
         # score is downgraded to B before it renders, so both values are valid here.
         if a.get("tier") not in ("A", "B"):
             errs.append("tier must be A or B for file_ops")
+        elif selfsignal.is_analyst_path((a.get("payload") or {}).get("path")):
+            # An edit to an analyst instruction file changes how the pipeline
+            # judges everything else, including its own next self-edit. Pinned
+            # here rather than downgraded later, for the same reason enforcement
+            # proposals are: a loop allowed to one-click-rewrite its own analysts
+            # can rewrite the analyst that would have objected.
+            if a.get("tier") != "B":
+                errs.append("a self-edit to an analyst instruction file is "
+                            "permanently tier B")
         errs += validate_ops(a.get("payload"))
     elif t in ("jsonc_ops", "agents_md_ops"):
         if a.get("tier") != "B":

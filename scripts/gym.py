@@ -21,6 +21,13 @@ Attribution needs a per-session activation signal (`sessions[].activation`), so 
 skills and agents accrue cases today. Hooks and guidance blocks are registered and
 reported, but stay unscorable until some harness reports them firing per session.
 
+Self-signal cases: the plugin's own analyst instruction files are registered too
+(`selfsignal.py`), and their cases come from the loop's recorded outcomes instead of
+session activation — a finding the human rejected or that regressed is a failure case
+for the analyst that proposed it, one that was applied and verified is a working case,
+and so are the citation drops and the gym's own scores. That is the slow second
+timescale: the pipeline graded by the grades it already produced.
+
 Case floor: below `min_cases_per_side` on either side the gym reports `unscorable`
 and refuses to emit a score at all — a number off two cases is noise, not evidence.
 
@@ -62,6 +69,7 @@ from pathlib import Path
 import ledger as ledger_mod
 import redact
 import schema as so_schema
+import selfsignal
 import variants
 
 GYM_VERSION = "1"
@@ -149,6 +157,25 @@ def derive_artifacts(inv: dict) -> dict:
     return out
 
 
+def register_analysts(reg: dict, run_id: str) -> list:
+    """Register this plugin's own analyst instruction files, outside the
+    inventory-derived path above. They are artifacts of the same kind — markdown
+    steering an agent — but they are not part of the user's harness inventory, so
+    an inventory that never mentions them must not age them out. Returns the ids.
+
+    Their cases come from `selfsignal`, not from session activation, which is the
+    whole point: the loop grades its own analysts on outcomes the pipeline already
+    recorded (rejections, citation drops, verify verdicts, gym scores)."""
+    entries = selfsignal.artifact_entries()
+    for aid, fields in sorted(entries.items()):
+        entry = reg["artifacts"].setdefault(aid, {"id": aid, "first_seen_run": run_id})
+        entry.update(fields)
+        entry["last_seen_run"] = run_id
+        entry["absent_runs"] = 0
+        entry["retired"] = False
+    return sorted(entries)
+
+
 def update_registry(reg: dict, derived: dict, run_id: str, retire_after: int) -> dict:
     """Upsert everything inventory reported; tick absence for everything it didn't.
     Absence is counted once per run id (re-running `update` for the same run is
@@ -229,6 +256,7 @@ def accrue(state, evidence_dirs: list, run_id: str, cfg: dict) -> dict:
     for pack in packs:
         derived.update(derive_artifacts(pack["inventory"]))
     update_registry(reg, derived, run_id, retire_after)
+    analysts = register_analysts(reg, run_id)
 
     live = {aid: e for aid, e in reg["artifacts"].items()
             if not e.get("retired") and e.get("activation_key")}
@@ -253,20 +281,34 @@ def accrue(state, evidence_dirs: list, run_id: str, cfg: dict) -> dict:
                     _make_case(pack["harness"], "working", wrk, wrk.get("user_text", ""),
                                wrk.get("assistant_text", ""), run_id))
 
+    # the analysts' own cases: outcomes of what they proposed on earlier runs,
+    # read back out of the ledger, the citation drops and the gym scores
+    for aid, sides in selfsignal.collect(state, run_id).items():
+        if aid not in reg["artifacts"]:
+            continue
+        slot = pending.setdefault(aid, {"failure": [], "working": []})
+        for side in SIDES:
+            slot[side] += sides[side]
+
     added = {"failure": 0, "working": 0}
+    added_self = 0
     for aid, sides in pending.items():
         if not (sides["failure"] or sides["working"]):
             continue
         corpus = load_corpus(gdir, aid)
+        known = {c["id"] for side in SIDES for c in corpus[side]}
         for side in SIDES:
             corpus[side], n = _merge(corpus[side], sides[side], cap)
             added[side] += n
+        added_self += sum(1 for side in SIDES for c in corpus[side]
+                          if c.get("origin") == "self" and c["id"] not in known)
         save_corpus(gdir, corpus)
     save_registry(gdir, reg)
     return {"registered": len(reg["artifacts"]),
-            "new": sorted(set(derived) - known_before),
+            "new": sorted((set(derived) | set(analysts)) - known_before),
             "retired": sorted(a for a, e in reg["artifacts"].items() if e.get("retired")),
-            "added_failure": added["failure"], "added_working": added["working"]}
+            "added_failure": added["failure"], "added_working": added["working"],
+            "added_self": added_self}
 
 
 def _active_artifacts(session: dict | None, by_key: dict) -> list:
@@ -277,8 +319,18 @@ def _active_artifacts(session: dict | None, by_key: dict) -> list:
 
 
 # ---------------------------------------------------------------- status
+def self_case_counts(state, artifact_id: str) -> dict:
+    """How many of an artifact's cases came from the loop's own outcomes rather
+    than from session activation."""
+    corpus = load_corpus(gym_dir(state), artifact_id)
+    return {side: sum(1 for c in corpus[side] if c.get("origin") == "self")
+            for side in SIDES}
+
+
 def artifact_status(state, cfg: dict) -> list:
-    """One row per registered artifact: case counts and whether it can be scored."""
+    """One row per registered artifact: case counts and whether it can be scored.
+    Analyst artifacts report their self-signal counts alongside the totals — for
+    them the two are the same number, and for everything else they are zero."""
     floor = int((cfg.get("gym") or {}).get("min_cases_per_side", 3))
     gdir = gym_dir(state)
     reg = load_registry(gdir)
@@ -287,10 +339,14 @@ def artifact_status(state, cfg: dict) -> list:
         entry = reg["artifacts"][aid]
         corpus = load_corpus(gdir, aid)
         counts = {side: len(corpus[side]) for side in SIDES}
+        self_counts = {side: sum(1 for c in corpus[side] if c.get("origin") == "self")
+                       for side in SIDES}
         scorable, reason = _scorable(entry, counts, floor)
         rows.append({"id": aid, "kind": entry.get("kind"), "retired": bool(entry.get("retired")),
                      "absent_runs": entry.get("absent_runs", 0),
                      "failure_cases": counts["failure"], "working_cases": counts["working"],
+                     "self_failure_cases": self_counts["failure"],
+                     "self_working_cases": self_counts["working"],
                      "scorable": scorable, "reason": reason})
     return rows
 
@@ -298,7 +354,7 @@ def artifact_status(state, cfg: dict) -> list:
 def _scorable(entry: dict, counts: dict, floor: int) -> tuple:
     if entry.get("retired"):
         return False, f"retired (absent {entry.get('absent_runs', 0)} runs)"
-    if not entry.get("activation_key"):
+    if not entry.get("activation_key") and not entry.get("self_signal"):
         return False, "no per-session activation signal for this artifact kind"
     thin = [s for s in SIDES if counts[s] < floor]
     if thin:
@@ -678,7 +734,8 @@ def cmd_update(a) -> int:
     summary = accrue(state, a.evidence, a.run_id, cfg)
     print(f"gym: registered={summary['registered']} new={len(summary['new'])} "
           f"retired={len(summary['retired'])} "
-          f"+failure_cases={summary['added_failure']} +working_cases={summary['added_working']}")
+          f"+failure_cases={summary['added_failure']} +working_cases={summary['added_working']} "
+          f"+self_cases={summary['added_self']}")
     return 0
 
 
@@ -690,11 +747,12 @@ def cmd_status(a) -> int:
     if a.json:
         print(json.dumps({"artifacts": rows}, indent=1))
         return 0
-    print(f"{'artifact':<48} {'kind':<9} {'fail':>5} {'work':>5}  status")
+    print(f"{'artifact':<48} {'kind':<9} {'fail':>5} {'work':>5} {'self':>7}  status")
     for r in rows:
         status = "scorable" if r["scorable"] else r["reason"]
+        self_cell = f"{r['self_failure_cases']}/{r['self_working_cases']}"
         print(f"{r['id'][:48]:<48} {str(r['kind']):<9} {r['failure_cases']:>5} "
-              f"{r['working_cases']:>5}  {status}")
+              f"{r['working_cases']:>5} {self_cell:>7}  {status}")
     print(f"{len(rows)} artifacts, {sum(1 for r in rows if r['scorable'])} scorable")
     return 0
 

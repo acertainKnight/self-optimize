@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 
 import schema as so_schema
+import selfsignal
 
 ALLOWED_SETTING_ROOTS = {"skillOverrides", "enabledPlugins", "model", "outputStyle", "effortLevel"}
 # Codex's config.toml top-level/one-level-nested keys a rec may targeted-edit.
@@ -354,6 +355,13 @@ def render(action: dict, data_root: Path, extra_roots=None, harness_roots=None) 
         return [(f, p["content"])]
     if t == "file_ops":
         f = Path(p["path"]).expanduser()
+        if selfsignal.is_analyst_path(str(f)):
+            # self-application: the plugin's own analyst instruction files live
+            # outside the user's config dir, so they get their own confinement —
+            # an exact match against those files, and nothing else in the plugin.
+            if f.is_symlink():
+                raise ValueError(f"refusing machine write through symlink: {f}")
+            return [(f, so_schema.apply_ops(f.read_text(), p["ops"]))]
         if _require_user_md(f, data_root, extra_roots):
             # a bounded edit is still an edit of existing text, and memory notes are
             # create-only for the same injection-amplifier reason file_replace is
@@ -482,7 +490,11 @@ def smoke_check(paths: list, data_root: Path) -> list:
                 errs.append(f"{p}: unreadable ({e})")
                 continue
             target = os.path.normpath(str(p))
-            if not any(target == b or target.startswith(b + os.sep) for b in fm_roots):
+            # analyst instruction files are agent definitions too, so they get the
+            # same frontmatter check: a self-edit that eats the frontmatter breaks
+            # the analyst, and failing here is what restores the file.
+            if not (any(target == b or target.startswith(b + os.sep) for b in fm_roots)
+                    or selfsignal.is_analyst_path(str(p))):
                 continue
             fm = so_schema.parse_frontmatter(text)
             if not fm:

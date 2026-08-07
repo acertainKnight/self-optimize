@@ -144,6 +144,14 @@ def _card_html(rec: dict, entry: dict | None, sec: dict | None = None) -> str:
     if rec.get("prior_rejection"):
         parts.append(f'<p class="note">previously rejected: {_esc(rec["prior_rejection"])} '
                       f'&mdash; evidence has changed since</p>')
+    self_edit = rec.get("self_edit")
+    if isinstance(self_edit, dict):
+        parts.append(
+            f'<p class="note">SELF-EDIT: bounded edit to the '
+            f'<code>{_esc(self_edit.get("analyst"))}</code> instruction file, gated by '
+            f'{self_edit.get("failure_cases", 0)} recorded self-failure cases and '
+            f'{self_edit.get("working_cases", 0)} self-working cases &mdash; permanently '
+            f'tier B, one per analyst per run</p>')
     parts.append(f'<p class="evidence">{_evidence_chips(rec["evidence_refs"])}</p>')
     parts.append(f'<p class="risk">{_esc(rec["risk"])}</p>')
     parts.append(_security_html(sec))

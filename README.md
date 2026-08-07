@@ -160,6 +160,14 @@ Merged on `main` and working:
   that adds or edits a script or hook command from tier A, and a pluggable judge checks
   the content against its declared purpose. An instruction-only edit never reaches
   either gate.
+- Self-application on a slow timescale: the four analyst instruction files are gym
+  artifacts too, graded on the loop's own records rather than on transcripts — a finding
+  the user rejected or that regressed is a failure case for the analyst that proposed it,
+  one that was applied and verified is a working case, and so are citation drops and the
+  gym's own scores. Once an analyst has enough recorded failures, the evolver may propose
+  one bounded edit to it. That edit is permanently tier B whatever it scores, capped at
+  one per analyst per run, and re-checked on the next run: if the share of citations that
+  resolve or the share of applied changes that verify falls, it is flagged for rollback.
 - Evidence-only adapters for the Codex CLI, the claude.ai conversation export, and opencode.
 - A papercut channel: a standing instruction has agents self-report friction they work
   around instead of stopping to fix it. `collect.py` folds the file into the evidence
@@ -188,8 +196,10 @@ today" is done; the rest is open.
   reflective proposal per artifact, not an automatic hill climb: with thin per-artifact
   case counts, a front is a front over few examples, and a human still picks.
 - [#43 — Wave 4: self-application](https://github.com/acertainKnight/self-optimize/issues/43).
-  The analyst instruction files become gym artifacts improved by the same machinery (#37),
-  on a deliberately slow timescale.
+  The analyst instruction files become gym artifacts improved by the same machinery (#37):
+  shipped, on a deliberately slow timescale — the self-signal is the pipeline's own
+  recorded outcomes, one edit per analyst per run, tier B always, and the next run's
+  citation and verification rates decide whether it stays.
 - [#44 — Portfolio](https://github.com/acertainKnight/self-optimize/issues/44). A synthetic
   demo corpus (#38) and a CI benchmark over it (#39), so the loop is runnable end to end
   without real transcripts.
@@ -292,6 +302,21 @@ failure mode by default — skills accumulate, near-duplicates pile up, retired 
 keep loading. The curator in #29 takes TroVE's trimming discipline, and does the cheap
 half deterministically: similarity and activation counts find candidate duplicates and
 dead skills with no model calls at all.
+
+**MetaSkill-Evolve** ([arXiv 2607.05297](https://arxiv.org/abs/2607.05297)) **and STOP**
+([arXiv 2310.02304](https://arxiv.org/abs/2310.02304)). Adopt the two timescales; reject
+the closed loop. STOP is the lineage: a program that improves the program that improves
+programs, and its own authors report the scaffold learning to disable a sandbox flag when
+that helped the score. MetaSkill-Evolve gives the shape that makes the idea usable — a
+fast loop improving the artifacts and a slow loop improving the pipeline that improves
+them, both using the same rewrite-and-validate mechanism. Both loops ship here, and the
+slow one is deliberately hobbled. Its evidence is only what the pipeline already recorded
+(rejections, citation drops, verify verdicts, gym scores), it may change one analyst file
+per run by bounded edits, the edit is tier B whatever it scores, and the run after it is
+measured on citations resolving and applies verifying so a self-edit that made the loop
+worse is flagged for rollback. What it never does is close: no self-edit reaches an
+analyst file without a person deciding, which is the property STOP's own failure case
+argues for.
 
 ## Safety posture
 

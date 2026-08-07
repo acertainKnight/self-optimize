@@ -188,6 +188,41 @@ def _enforcement_block(enf: dict, rid: str) -> list:
     return L + ["```", body, "```", ""]
 
 
+def _self_edit_line(block: dict) -> str:
+    """What gates a self-edit, on the finding itself: the analyst's own recorded
+    outcomes, and the tier lock that no score can lift."""
+    return (f"- self-application: bounded edit to the `{block.get('analyst')}` "
+            f"instruction file, gated by {block.get('failure_cases', 0)} recorded "
+            f"self-failure cases and {block.get('working_cases', 0)} self-working "
+            f"cases. Permanently tier B, and capped at one edit per analyst per run.")
+
+
+def _self_edit_section(rows: list) -> list:
+    L = ["## Self-edits: pipeline health after the change", "",
+         "An edit to an analyst instruction file is graded on the pipeline's own "
+         "numbers on the run that followed it — the share of recommendations whose "
+         "citations resolved, and the share of applied changes that verified. A fall "
+         "in either is flagged here for you to roll back; nothing is reverted "
+         "automatically.", "",
+         "| id | analyst | applied | before | after | citations | verified | verdict |",
+         "|---|---|---|---|---|---|---|---|"]
+    for r in rows:
+        rates = r.get("rates") or {}
+
+        def cell(key):
+            v = rates.get(key)
+            return ("-" if not v else
+                    f"{v['before']:.2f} -> {v['after']:.2f} ({v['rel_change'] * 100:+.0f}%)")
+        verdict = f"**{r['verdict']}**"
+        if r["verdict"] == "regressed":
+            verdict += f" · rollback: /self-optimize rollback {r['id']}"
+        L.append(f"| `{r['id']}` | {_cell(r['artifact'])} | "
+                 f"{_cell(str(r.get('applied_at') or '')[:10])} | "
+                 f"{_cell(r.get('before_run') or '-')} | {_cell(r.get('after_run') or '-')} | "
+                 f"{cell('citation_rate')} | {cell('verified_rate')} | {verdict} |")
+    return L + [""]
+
+
 def _share_cell(side: dict) -> str:
     share = side.get("share")
     if share is None:
@@ -214,7 +249,7 @@ def _enforcement_section(rows: list) -> list:
 
 def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
            cumulative=None, shadow=None, roi=None, gym=None, security=None, fronts=None,
-           enforcement_rows=None) -> str:
+           enforcement_rows=None, self_edit_rows=None) -> str:
     L = [f"# self-optimize report — {run_id}", ""]
     if verify_rows:
         L += ["## Applied changes: outcomes", "",
@@ -230,6 +265,8 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
         L.append("")
     if enforcement_rows:
         L += _enforcement_section(enforcement_rows)
+    if self_edit_rows:
+        L += _self_edit_section(self_edit_rows)
     L += [f"## Findings ({len(findings)})", ""]
     if findings:
         L += ["| # | id | category | impact | tier | title |", "|---|---|---|---|---|---|"]
@@ -255,6 +292,8 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
         sec = (security or {}).get(r["id"])
         if sec:
             L.append(_security_line(sec))
+        if isinstance(r.get("self_edit"), dict):
+            L.append(_self_edit_line(r["self_edit"]))
         for loc in r.get("deep_localize") or []:
             b = loc.get("bracket") or [0, 0]
             L.append(f"- deep localize: session went off track around turn {b[0] + 1}-{b[1] + 1} "
@@ -382,11 +421,12 @@ def main(argv=None):
     evdir = Path(a.evidence)
     fdata = json.loads((evdir / "findings.json").read_text())
     usage = json.loads((evdir / "usage.json").read_text())
-    verify_rows, enforcement_rows = [], []
+    verify_rows, enforcement_rows, self_edit_rows = [], [], []
     if (evdir / "verify.json").exists():
         vdata = json.loads((evdir / "verify.json").read_text())
         verify_rows = vdata["rows"]
         enforcement_rows = vdata.get("enforcement") or []
+        self_edit_rows = vdata.get("self_edits") or []
     tokens = _parse_analyst_tokens(a.analyst_tokens)
     if tokens is None and (evdir / "analyst_tokens.json").exists():
         try:
@@ -414,7 +454,7 @@ def main(argv=None):
                 _trend(state), usage, {"analyst_tokens": tokens}, cumulative=cumulative,
                 shadow=shadow, roi={"saved": saved, "spent": spent}, gym=gym, security=security,
                 fronts=variants.all_fronts(state, max_members),
-                enforcement_rows=enforcement_rows)
+                enforcement_rows=enforcement_rows, self_edit_rows=self_edit_rows)
     rdir = Path(cfg["report_dir"])
     rdir.mkdir(parents=True, exist_ok=True)
     out = rdir / f"{a.run_id}.md"

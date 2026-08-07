@@ -47,6 +47,9 @@ matching command, echo its output verbatim to the user, then regenerate the dash
    `python3 SCRIPTS/gym.py update --evidence EV --state STATE --run-id RUN_ID` (derives
    the eval-gym registry from this run's inventory and accrues its graded cases; add a
    second `--evidence EV/harness/<name>` for each harness subdirectory collect.py wrote).
+   Its summary line also reports `+self_cases=<n>`: the pipeline's own analysts are gym
+   artifacts too, and those cases come from earlier runs' outcomes — findings the user
+   rejected, citation drops, verify verdicts, gym scores — never from transcripts.
    Print all three summary lines. If `STATE/config.json` did not exist before this run, tell
    the user it was created with defaults, and summarize what was read (session count,
    window) before continuing.
@@ -63,6 +66,9 @@ matching command, echo its output verbatim to the user, then regenerate the dash
 3. **Verify previous applies:**
    `python3 SCRIPTS/verify.py --evidence EV --state STATE --out EV/verify.json` —
    skip silently if the script does not exist yet or the ledger has no applied entries.
+   If it prints any `SELF-EDIT REGRESSION:` line, show it to the user with the rollback
+   command it names: an edit to one of the pipeline's own analyst files was followed by
+   a run with fewer citations resolving or fewer applied changes verifying.
 3b. **Curator (deterministic dedupe/retire/lifecycle-metadata pass over the skill
     library):** `python3 SCRIPTS/curator.py --evidence EV --state STATE --out
     EV/curator.json` — pairwise similarity and activation counts, entirely in
@@ -82,6 +88,11 @@ matching command, echo its output verbatim to the user, then regenerate the dash
    friction and two or more scored versions in its archive also carries a `front` block
    in artifacts.json (the inventory line reports how many: `fronts=<n>`) — that is the
    evolver's record of what has already been tried, and it may branch from any member.
+   The inventory line also reports `analysts=<n>`: this plugin's own analyst instruction
+   files, included only once their self-corpus clears the case floor, so the evolver may
+   propose one bounded edit to one of them. Those findings are permanently tier B and
+   capped at one per analyst per run — if the synth summary in step 5 reports
+   `self_capped=<n>` above zero, tell the user the extras were dropped, not queued.
    Then launch the surviving analysts in
    parallel with the Agent tool. They are plugin agents restricted to the Read tool and
    carry their own instructions — the invocation prompt is just the file list plus a

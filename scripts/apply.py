@@ -255,7 +255,12 @@ def cmd_adopt(rid, state, evidence):
 def cmd_reject(rid, reason, state):
     lpath = Path(state) / "state" / "ledger.jsonl"
     e = ledger_mod.load(lpath).get(rid, {})
+    # carry the rec forward, same reason verify.py does it: ledger.load is
+    # last-entry-wins, so a rejection that dropped the rec would leave the id
+    # with no title, no action and no analyst — and a rejection is the loop's
+    # single strongest signal about the analyst that proposed it
     ledger_mod.append(lpath, {"id": rid, "status": "rejected", "reason": reason,
+                              "rec": e.get("rec"),
                               "evidence_hash": e.get("evidence_hash")})
     print(f"{rid}: rejected ({reason})")
 

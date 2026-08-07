@@ -3,7 +3,13 @@ transcript excerpts and never enters this repo."""
 import json, sys, pathlib, shutil, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 import gym
+import selfsignal
 import so_config
+
+# the plugin's own analyst instruction files register on every run, whatever the
+# inventory says (see gym.register_analysts) — inventory-derived assertions below
+# subtract them rather than restating them
+ANALYSTS = set(selfsignal.artifact_entries())
 
 
 def write_pack(ev: pathlib.Path, skills=("alpha",), agents=(), sessions=(), samples=(),
@@ -64,8 +70,9 @@ class TestRegistry(GymCase):
                         hooks=("hook:settings",), guidance=("/synthetic/CLAUDE.md",))
         gym.accrue(self.state, [ev], "2026-06-01", self.cfg)
         rows = self.status_by_id()
-        self.assertEqual(set(rows), {"skill:alpha", "agent:helper", "hook:settings",
-                                     "guidance:/synthetic/CLAUDE.md"})
+        self.assertEqual(set(rows) - ANALYSTS,
+                         {"skill:alpha", "agent:helper", "hook:settings",
+                          "guidance:/synthetic/CLAUDE.md"})
         self.assertEqual(rows["skill:alpha"]["failure_cases"], 0)
         self.assertFalse(rows["skill:alpha"]["scorable"])
 
@@ -246,7 +253,8 @@ class TestCliAndPermissions(GymCase):
         with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit):
             gym.main(["status", "--state", str(self.state), "--json"])
         rows = json.loads(buf.getvalue())["artifacts"]
-        self.assertEqual({r["id"] for r in rows}, {"skill:alpha", "agent:helper"})
+        self.assertEqual({r["id"] for r in rows} - ANALYSTS,
+                         {"skill:alpha", "agent:helper"})
 
 
 STUB_JUDGE = '''\
