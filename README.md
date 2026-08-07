@@ -132,6 +132,14 @@ Merged on `main` and working:
   as those edits would leave it; anything it cannot score drops to tier B for you to
   read. A structural rewrite is still possible, but it has to say so and it is never
   tier A.
+- A variant archive per artifact: every candidate the gym scores is kept — applied or not
+  — with the variant it was written against, the edits that produced it, and both sides of
+  its score. `gym.py archive <artifact>` prints the lineage and the dashboard renders it.
+  A proposal can branch from any archived variant, including one nobody applied: its edits
+  are flattened onto that variant's own chain, so the branch still applies to the file on
+  disk as one bounded edit and still refuses in one piece if the file moved on. Over the
+  retention cap, variants beaten on BOTH prevented and preserved are evicted first, and
+  the live version is never evicted.
 - Markdown report plus a self-contained HTML dashboard, per-item apply / reject / amend /
   assist, a durable decision record, snapshot-backed applies with a post-write smoke
   check and auto-restore, and one-command rollback.
@@ -150,7 +158,8 @@ Merged on `main` and working:
 
 ## Roadmap
 
-Tracked as four waves plus a portfolio epic. Nothing below is implemented.
+Tracked as four waves plus a portfolio epic. Anything already listed under "What ships
+today" is done; the rest is open.
 
 - [#40 — Wave 1: the spine](https://github.com/acertainKnight/self-optimize/issues/40).
   One data path across harnesses feeding an eval gym that gates self-edits: a turn-level
@@ -164,8 +173,9 @@ Tracked as four waves plus a portfolio epic. Nothing below is implemented.
   (#31), failure localization (#32), and apply templates for non-Claude config
   surfaces (#33).
 - [#42 — Wave 3: search over variants](https://github.com/acertainKnight/self-optimize/issues/42).
-  A versioned variant archive (#35) and Pareto selection over it (#36). Gated on the gym
-  proving itself on real corpus data first.
+  The versioned variant archive (#35) ships; Pareto selection over it (#36) is next. The
+  search only becomes worth running once the gym has scored real corpus data, so the
+  archive records what was tried from the first run and the selection reads it later.
 - [#43 — Wave 4: self-application](https://github.com/acertainKnight/self-optimize/issues/43).
   The analyst instruction files become gym artifacts improved by the same machinery (#37),
   on a deliberately slow timescale.

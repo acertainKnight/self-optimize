@@ -59,8 +59,10 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import ledger as ledger_mod
 import redact
 import schema as so_schema
+import variants
 
 GYM_VERSION = "1"
 # cases are judge input, so excerpts are capped at the same size collect.py stores
@@ -489,17 +491,63 @@ def score_artifact(state, artifact_id: str, candidate_text: str, cfg: dict,
 CANDIDATE_CATEGORY = "skill-improve"
 
 
-def candidate_text(rec: dict) -> tuple:
+def branch_parent(rec: dict) -> str | None:
+    """The archived variant a finding says it branches from, if it says so at all."""
+    p = (rec.get("action") or {}).get("payload") or {}
+    pid = p.get("parent_variant")
+    return pid if isinstance(pid, str) and pid.strip() else None
+
+
+def compose_branch(rec: dict, state, artifact_id: str | None) -> str:
+    """Flatten a branch-from-archive proposal onto the live artifact.
+
+    A finding may declare `parent_variant`: an archived candidate its ops were written
+    against. Those ops anchor into the PARENT's text, not the file on disk, so applying
+    them as they stand would miss every anchor the parent introduced. Prefixing the
+    parent's own flattened chain turns the pair into one ordered bounded edit against
+    the live artifact — the same thing the gym scores, the report prints and apply
+    writes — and it still refuses in one piece if the artifact changed underneath.
+
+    Returns "" when there is nothing to do or the flattening succeeded, otherwise the
+    reason it could not be resolved. `ops_composed` marks a payload already flattened,
+    so re-running the gate on the same findings file never stacks the chain twice.
+    """
+    p = (rec.get("action") or {}).get("payload") or {}
+    pid = branch_parent(rec)
+    if not pid or p.get("ops_composed"):
+        return ""
+    if state is None or not artifact_id:
+        return f"branches from variant {pid} but names no registered gym artifact"
+    parent = variants.get(state, artifact_id, pid)
+    if parent is None:
+        return f"parent variant {pid} is not in the archive for {artifact_id}"
+    chain = list(parent.get("chain_ops") or [])
+    if not chain:
+        # a whole-body rewrite has no op chain back to the live artifact, so there is
+        # nothing to anchor a bounded branch onto — refuse rather than silently apply
+        # the delta to text it was not written against
+        return f"parent variant {pid} is a whole-body rewrite with no edit chain to build on"
+    p["ops"] = chain + list(p.get("ops") or [])
+    p["ops_composed"] = True
+    return ""
+
+
+def candidate_text(rec: dict, state=None, artifact_id: str | None = None) -> tuple:
     """(text the gym should score, reason it could not be built).
 
     A `file_ops` finding is scored on what the user would actually end up with: the
     artifact's CURRENT text with that finding's ops applied. Building it here also
     catches an op set that no longer applies — a missing or ambiguous anchor surfaces
     as an unscorable reason before a human ever clicks apply. A payload declared
-    `op: rewrite` already carries its whole body."""
+    `op: rewrite` already carries its whole body. A payload declaring `parent_variant`
+    is flattened onto its archived parent first, so it too is scored as the file would
+    end up."""
     a = rec.get("action") or {}
     p = a.get("payload") or {}
     if a.get("type") == "file_ops":
+        why = compose_branch(rec, state, artifact_id)
+        if why:
+            return None, why
         # the path was containment-checked by synth.guard before it reached
         # findings.json, and this only ever reads it
         try:
@@ -527,11 +575,16 @@ def gate(state, findings_path, cfg: dict, budget=None, run_id=None) -> dict:
     """Score every evolver candidate against its artifact's corpus, then fail closed on
     tier: a candidate the gym could not score is downgraded to tier B, so a human reads
     an unmeasured edit instead of one-click-applying it. Scores stay decision support
-    either way — nothing here applies, rejects, or edits what a finding proposes."""
+    either way — nothing here applies, rejects, or promotes what a finding proposes.
+
+    Every candidate it built, scored or not, is archived as a variant of its artifact.
+    The archive is the loop's memory of what has already been tried and how it did."""
+    gcfg = cfg.get("gym") or {}
+    cap = int(gcfg.get("max_variants_per_artifact", variants.DEFAULT_CAP))
     findings_path = Path(findings_path)
     doc = json.loads(findings_path.read_text())
     reg = load_registry(gym_dir(state))
-    scores, downgraded, scored = {}, [], 0
+    scores, downgraded, composed, scored = {}, [], [], 0
     judge_missing = False
     for rec in doc.get("findings") or []:
         action = rec.get("action") or {}
@@ -539,8 +592,14 @@ def gate(state, findings_path, cfg: dict, budget=None, run_id=None) -> dict:
             continue
         if action.get("type") != "file_ops" and not so_schema.is_rewrite(action):
             continue   # a diff or a manual hand-off is not a candidate artifact version
-        text, why = candidate_text(rec)
+        payload = action.get("payload") or {}
+        parent = branch_parent(rec)
+        delta = list(payload.get("ops") or [])
+        branching = bool(parent) and not payload.get("ops_composed")
         aid = artifact_ref(rec, reg)
+        text, why = candidate_text(rec, state=state, artifact_id=aid)
+        if branching and payload.get("ops_composed"):
+            composed.append(rec["id"])
         if text is None:
             result = blank_score(aid, run_id, why)
         elif aid is None:
@@ -555,13 +614,35 @@ def gate(state, findings_path, cfg: dict, budget=None, run_id=None) -> dict:
                                                   "(set gym.judge.command)")
         scores[rec["id"]] = result
         scored += int(not result["unscorable"])
+        if text is not None and aid:
+            variants.record(state, aid, text, result, ops=delta,
+                            chain_ops=payload.get("ops") or [], parent=parent,
+                            base_sha=variants.file_sha(payload.get("path")),
+                            run_id=run_id, finding_id=rec.get("id"),
+                            path=payload.get("path"), cap=cap,
+                            provenance={"title": rec.get("title", ""),
+                                        "evidence_refs": rec.get("evidence_refs") or [],
+                                        "expected_improvement":
+                                            payload.get("expected_improvement", "")})
         if result["unscorable"] and (rec.get("action") or {}).get("tier") == "A":
             rec["action"]["tier"] = "B"
             downgraded.append(rec["id"])
-    if downgraded:
+    if downgraded or composed:
         _write_json(findings_path, doc)
+    # apply reads the recommendation back out of the LEDGER, not findings.json, so a
+    # payload the gate flattened has to land there too or the branch would apply as the
+    # analyst's bare delta and miss every anchor its parent introduced.
+    if composed:
+        lpath = Path(state) / "state" / "ledger.jsonl"
+        by_id = {r["id"]: r for r in doc.get("findings") or [] if isinstance(r, dict)}
+        for rid in composed:
+            rec = by_id.get(rid)
+            if rec:
+                ledger_mod.append(lpath, {"id": rid, "status": "proposed", "rec": rec,
+                                          "evidence_hash": rec.get("evidence_hash")})
     return {"scores": scores, "candidates": len(scores), "scored": scored,
-            "downgraded": downgraded, "judge_missing": judge_missing}
+            "downgraded": downgraded, "composed": composed,
+            "judge_missing": judge_missing}
 
 
 # ---------------------------------------------------------------- CLI
@@ -626,6 +707,18 @@ def cmd_score(a) -> int:
     return 0
 
 
+def cmd_archive(a) -> int:
+    import so_config
+    _, state = so_config.resolve(None, a.state)
+    records = variants.load(state, a.artifact)
+    if a.json:
+        print(json.dumps({"artifact": a.artifact, "variants": records}, indent=1))
+        return 0
+    for line in variants.lineage_lines(a.artifact, records, variants.live_id(records)):
+        print(line)
+    return 0
+
+
 def cmd_gate(a) -> int:
     import so_config
     _, state = so_config.resolve(None, a.state)
@@ -636,7 +729,8 @@ def cmd_gate(a) -> int:
         print(JUDGE_UNCONFIGURED.format(path=Path(state) / "config.json"), file=sys.stderr)
     _write_json(Path(a.out), summary["scores"])
     print(f"gym gate: {summary['candidates']} candidates, {summary['scored']} scored, "
-          f"{len(summary['downgraded'])} downgraded to tier B "
+          f"{len(summary['downgraded'])} downgraded to tier B, "
+          f"{len(summary['composed'])} flattened onto an archived parent "
           f"(scores are evidence for your decision, never an auto-gate)")
     return 0
 
@@ -666,6 +760,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="cap judge input tokens; cases past the cap are skipped, not truncated")
     sc.add_argument("--run-id", default=date.today().isoformat())
     sc.set_defaults(func=cmd_score)
+
+    ar = sub.add_parser("archive", help="lineage of every scored candidate version of "
+                                        "one artifact")
+    ar.add_argument("artifact", help="registry id, e.g. skill:<name>")
+    ar.add_argument("--state", default=None)
+    ar.add_argument("--json", action="store_true")
+    ar.set_defaults(func=cmd_archive)
 
     ga = sub.add_parser("gate", help="score a run's evolver candidates and downgrade "
                                      "unscorable ones to tier B")

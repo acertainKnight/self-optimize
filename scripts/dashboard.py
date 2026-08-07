@@ -33,6 +33,7 @@ from pathlib import Path
 
 import ledger as ledger_mod
 import schema as so_schema
+import variants
 from report import _cumulative_savings, _impact, _num
 
 _BADGE_CLASS = {
@@ -204,6 +205,55 @@ def _outcomes_table(verify_rows: list) -> str:
         "<th>baseline</th><th>now</th><th>n</th></tr></thead><tbody>"
         + "".join(rows) + "</tbody></table></div></section>"
     )
+
+
+def _variant_rows(records: list, live: str | None) -> str:
+    rows = []
+    for v in records:
+        scores = v.get("scores") or {}
+        if scores.get("unscorable", True):
+            prevented = preserved = "-"
+            note = scores.get("reason") or "unscorable"
+        else:
+            p, w = scores.get("prevented") or {}, scores.get("preserved") or {}
+            prevented = f'{p.get("n", 0)}/{p.get("of", 0)}'
+            preserved = f'{w.get("n", 0)}/{w.get("of", 0)}'
+            note = (v.get("provenance") or {}).get("title") or ""
+        marks = "live" if v["id"] == live else ""
+        rows.append(
+            "<tr>"
+            f'<td><code class="chip id">{_esc(v["id"])}</code></td>'
+            f'<td>{_esc(v.get("parent") or "root")}</td>'
+            f'<td>{_esc(v.get("run_id") or "-")}</td>'
+            f'<td>{_esc(prevented)}</td><td>{_esc(preserved)}</td>'
+            f'<td>{_esc(len(v.get("ops") or []))}</td>'
+            f'<td>{_esc(marks)}</td><td>{_esc(note)}</td>'
+            "</tr>"
+        )
+    return "".join(rows)
+
+
+def _variants_section(archive: dict) -> str:
+    """One lineage table per artifact: every candidate version the gym has scored, the
+    variant it was written against, and both sides of its score. Reading only, and
+    deliberately so — the archive is history, and promoting a variant is still a human
+    decision made on the finding cards above."""
+    if not archive:
+        return ""
+    parts = ['<section class="findings"><h2>Variant archive</h2>']
+    for artifact in sorted(archive):
+        records = archive[artifact]
+        parts.append(f"<h3>{_esc(artifact)} &mdash; {len(records)} variant(s)</h3>")
+        parts.append(
+            '<div class="table-wrap"><table><thead><tr>'
+            "<th>variant</th><th>parent</th><th>run</th><th>prevented</th>"
+            "<th>preserved</th><th>edits</th><th></th><th>note</th>"
+            "</tr></thead><tbody>"
+            + _variant_rows(records, variants.live_id(records))
+            + "</tbody></table></div>"
+        )
+    parts.append("</section>")
+    return "".join(parts)
 
 
 def _stat_tiles(findings: list, verify_rows: list, cumulative: list, usage: dict) -> str:
@@ -538,7 +588,7 @@ _JS = """
 
 
 def render_dashboard(run_id, findings, dropped, verify_rows, cumulative, usage,
-                      ledger_entries, generated_at=None, security=None) -> str:
+                      ledger_entries, generated_at=None, security=None, archive=None) -> str:
     generated_at = generated_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     tier_a = [f for f in findings if f.get("action", {}).get("tier") == "A"]
     tier_b = [f for f in findings if f.get("action", {}).get("tier") == "B"]
@@ -579,7 +629,7 @@ def render_dashboard(run_id, findings, dropped, verify_rows, cumulative, usage,
     parts += ["</div>", "<h2>Tier B &mdash; assisted work</h2>", '<div class="cards">']
     parts += [_card_html(rec, ledger_entries.get(rec["id"]), security.get(rec["id"]))
               for rec in tier_b] or ["<p>None.</p>"]
-    parts += ["</div>", "</section>", "</div>"]
+    parts += ["</div>", "</section>", _variants_section(archive or {}), "</div>"]
 
     body = "\n".join(parts)
     data_json = _json_island(data_island)
@@ -649,7 +699,8 @@ def main(argv=None):
         except json.JSONDecodeError:
             security = None
     doc = render_dashboard(a.run_id, fdata["findings"], fdata["dropped"], verify_rows,
-                           cumulative, usage, ledger_entries, generated_at, security)
+                           cumulative, usage, ledger_entries, generated_at, security,
+                           archive=variants.load_all(state))
     rdir = Path(a.out) if a.out else Path(cfg["report_dir"])
     rdir.mkdir(parents=True, exist_ok=True)
     out = rdir / f"{a.run_id}.html"
