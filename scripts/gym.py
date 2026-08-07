@@ -40,6 +40,11 @@ discovering reward hacks (spawning resources outright). The two-sided score plus
 human ratifying every apply is the defense; a single auto-gated number is the failure
 mode. Scores are decision support, never an auto-gate.
 
+`gym.py gate` is how a run uses that: it builds each evolver candidate deterministically
+(for a bounded `file_ops` edit, the artifact's current text with the ops applied), scores
+it, and downgrades any candidate it could not score from tier A to tier B — an unmeasured
+edit gets read by a human rather than applied in one click.
+
 The judge backend is configured, never hardcoded: `gym.judge.command` in config.json
 is any CLI that reads a prompt on stdin and writes a JSON verdict on stdout. There is
 no default backend, model, or vendor anywhere in this file — an unconfigured judge is
@@ -55,6 +60,7 @@ from datetime import date
 from pathlib import Path
 
 import redact
+import schema as so_schema
 
 GYM_VERSION = "1"
 # cases are judge input, so excerpts are capped at the same size collect.py stores
@@ -406,6 +412,15 @@ def _est_tokens(text: str) -> int:
     return len(text) // 4
 
 
+def blank_score(artifact_id, run_id=None, reason: str = "") -> dict:
+    """An unscorable result in the same shape a scored one has, so every consumer can
+    read `prevented`/`preserved`/`unscorable` without special-casing."""
+    return {"artifact": artifact_id, "run_id": run_id,
+            "prevented": {"n": 0, "of": 0}, "preserved": {"n": 0, "of": 0},
+            "unscorable": True, "reason": reason, "errors": 0, "skipped_budget": 0,
+            "tokens_est": 0, "per_case": []}
+
+
 def score_artifact(state, artifact_id: str, candidate_text: str, cfg: dict,
                    budget: int | None = None, run_id: str | None = None) -> dict:
     """Two-sided score for one candidate artifact text. Judge calls are the expensive
@@ -416,10 +431,7 @@ def score_artifact(state, artifact_id: str, candidate_text: str, cfg: dict,
     floor = int(gcfg.get("min_cases_per_side", 3))
     gdir = gym_dir(state)
     reg = load_registry(gdir)
-    result = {"artifact": artifact_id, "run_id": run_id,
-              "prevented": {"n": 0, "of": 0}, "preserved": {"n": 0, "of": 0},
-              "unscorable": True, "reason": "", "errors": 0, "skipped_budget": 0,
-              "tokens_est": 0, "per_case": []}
+    result = blank_score(artifact_id, run_id)
 
     entry = reg["artifacts"].get(artifact_id)
     if entry is None:
@@ -470,6 +482,85 @@ def score_artifact(state, artifact_id: str, candidate_text: str, cfg: dict,
     else:
         result["unscorable"] = False
     return result
+
+
+# ---------------------------------------------------------------- finding gate
+CANDIDATE_CATEGORY = "skill-improve"
+
+
+def candidate_text(rec: dict) -> tuple:
+    """(text the gym should score, reason it could not be built).
+
+    A `file_ops` finding is scored on what the user would actually end up with: the
+    artifact's CURRENT text with that finding's ops applied. Building it here also
+    catches an op set that no longer applies — a missing or ambiguous anchor surfaces
+    as an unscorable reason before a human ever clicks apply. A payload declared
+    `op: rewrite` already carries its whole body."""
+    a = rec.get("action") or {}
+    p = a.get("payload") or {}
+    if a.get("type") == "file_ops":
+        # the path was containment-checked by synth.guard before it reached
+        # findings.json, and this only ever reads it
+        try:
+            current = Path(str(p.get("path", ""))).expanduser().read_text(errors="replace")
+            return so_schema.apply_ops(current, p.get("ops") or []), ""
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            return None, f"ops do not apply to the current artifact: {e}"
+    if so_schema.is_rewrite(a) and isinstance(p.get("content"), str):
+        return p["content"], ""
+    return None, "action carries no candidate artifact text"
+
+
+def artifact_ref(rec: dict, reg: dict) -> str | None:
+    """The gym id this finding is about: an `artifact:<id>` evidence ref, minus the
+    prefix, that the registry actually knows."""
+    for ref in rec.get("evidence_refs") or []:
+        if isinstance(ref, str) and ref.startswith("artifact:"):
+            aid = ref[len("artifact:"):]
+            if aid in reg["artifacts"]:
+                return aid
+    return None
+
+
+def gate(state, findings_path, cfg: dict, budget=None, run_id=None) -> dict:
+    """Score every evolver candidate against its artifact's corpus, then fail closed on
+    tier: a candidate the gym could not score is downgraded to tier B, so a human reads
+    an unmeasured edit instead of one-click-applying it. Scores stay decision support
+    either way — nothing here applies, rejects, or edits what a finding proposes."""
+    findings_path = Path(findings_path)
+    doc = json.loads(findings_path.read_text())
+    reg = load_registry(gym_dir(state))
+    scores, downgraded, scored = {}, [], 0
+    judge_missing = False
+    for rec in doc.get("findings") or []:
+        action = rec.get("action") or {}
+        if rec.get("category") != CANDIDATE_CATEGORY:
+            continue
+        if action.get("type") != "file_ops" and not so_schema.is_rewrite(action):
+            continue   # a diff or a manual hand-off is not a candidate artifact version
+        text, why = candidate_text(rec)
+        aid = artifact_ref(rec, reg)
+        if text is None:
+            result = blank_score(aid, run_id, why)
+        elif aid is None:
+            result = blank_score(None, run_id,
+                                 "no registered gym artifact among the evidence refs")
+        else:
+            try:
+                result = score_artifact(state, aid, text, cfg, budget=budget, run_id=run_id)
+            except JudgeNotConfigured:
+                judge_missing = True
+                result = blank_score(aid, run_id, "no judge backend configured "
+                                                  "(set gym.judge.command)")
+        scores[rec["id"]] = result
+        scored += int(not result["unscorable"])
+        if result["unscorable"] and (rec.get("action") or {}).get("tier") == "A":
+            rec["action"]["tier"] = "B"
+            downgraded.append(rec["id"])
+    if downgraded:
+        _write_json(findings_path, doc)
+    return {"scores": scores, "candidates": len(scores), "scored": scored,
+            "downgraded": downgraded, "judge_missing": judge_missing}
 
 
 # ---------------------------------------------------------------- CLI
@@ -534,6 +625,21 @@ def cmd_score(a) -> int:
     return 0
 
 
+def cmd_gate(a) -> int:
+    import so_config
+    _, state = so_config.resolve(None, a.state)
+    cfg = so_config.load_config(state)
+    budget = a.max_budget if a.max_budget is not None else cfg.get("max_budget_tokens", 0)
+    summary = gate(state, a.findings, cfg, budget=budget, run_id=a.run_id)
+    if summary["judge_missing"]:
+        print(JUDGE_UNCONFIGURED.format(path=Path(state) / "config.json"), file=sys.stderr)
+    _write_json(Path(a.out), summary["scores"])
+    print(f"gym gate: {summary['candidates']} candidates, {summary['scored']} scored, "
+          f"{len(summary['downgraded'])} downgraded to tier B "
+          f"(scores are evidence for your decision, never an auto-gate)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="eval gym: per-artifact case corpus")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -559,6 +665,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="cap judge input tokens; cases past the cap are skipped, not truncated")
     sc.add_argument("--run-id", default=date.today().isoformat())
     sc.set_defaults(func=cmd_score)
+
+    ga = sub.add_parser("gate", help="score a run's evolver candidates and downgrade "
+                                     "unscorable ones to tier B")
+    ga.add_argument("--findings", required=True, help="findings.json for the run")
+    ga.add_argument("--state", default=None)
+    ga.add_argument("--out", required=True, help="write the per-finding scores here")
+    ga.add_argument("--max-budget", type=int, default=None,
+                    help="cap judge input tokens; cases past the cap are skipped, not truncated")
+    ga.add_argument("--run-id", default=date.today().isoformat())
+    ga.set_defaults(func=cmd_gate)
     return ap
 
 

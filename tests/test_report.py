@@ -199,5 +199,50 @@ class TestReport(unittest.TestCase):
         self.assertEqual(rows[-1]["verified_deltas"], {"correction_rate": 4.0})
 
 
+OPS_FINDING = {
+    "id": "ddd444", "title": "Sharpen the review skill", "category": "skill-improve",
+    "impact": {"ordinal": "med"}, "risk": "low", "delta_tokens": None,
+    "evidence_refs": ["artifact:skill:review"],
+    "metric": {"key": "correction_rate", "direction": "down", "scope": "global"},
+    "action": {"tier": "A", "type": "file_ops",
+               "payload": {"path": "/x/skills/review/SKILL.md",
+                           "ops": [{"op": "replace", "anchor": "- run the tests",
+                                    "text": "- run the whole suite",
+                                    "motivated_by": ["sample:3", "sample:7"]},
+                                   {"op": "delete", "anchor": "- ship it",
+                                    "motivated_by": ["sample:3"]}]}},
+}
+
+
+class TestBoundedEditRendering(unittest.TestCase):
+    def render(self, tier="A", gym=None):
+        f = json.loads(json.dumps(OPS_FINDING))
+        f["action"]["tier"] = tier
+        return report.render("2026-07-01", [f], DROPPED, [], TREND, USAGE,
+                             {"analyst_tokens": None}, gym=gym)
+
+    def test_every_operation_is_shown_with_its_provenance(self):
+        md = self.render()
+        self.assertIn("bounded edits (2)", md)
+        self.assertIn("1. replace @ '- run the tests'", md)
+        self.assertIn("-> '- run the whole suite'", md)
+        self.assertIn("motivated_by: sample:3, sample:7", md)
+        self.assertIn("2. delete @ '- ship it'", md)
+        self.assertIn("/self-optimize apply ddd444", md)
+
+    def test_gym_score_and_a_tier_b_downgrade_both_render(self):
+        md = self.render(gym={"ddd444": {"unscorable": False, "prevented": {"n": 3, "of": 4},
+                                         "preserved": {"n": 4, "of": 4}}})
+        self.assertIn("prevented 3/4 failure cases", md)
+        self.assertIn("preserved 4/4 working cases", md)
+        downgraded = self.render(tier="B", gym={"ddd444": {"unscorable": True,
+                                                           "reason": "below the case floor"}})
+        self.assertIn("gym score: unscorable — below the case floor", downgraded)
+        self.assertIn("bounded edits (2)", downgraded)      # still fully reviewable
+        self.assertIn("read the edits above", downgraded)
+        self.assertNotIn("/self-optimize apply ddd444", downgraded)
+        self.assertNotIn("manual action", downgraded)       # a bounded edit is not manual work
+
+
 if __name__ == "__main__":
     unittest.main()

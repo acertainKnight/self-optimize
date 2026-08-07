@@ -99,6 +99,26 @@ def _gym_line(g: dict) -> str:
             f"(judged evidence for your decision, not an auto-gate)")
 
 
+def _ops_block(payload: dict) -> list:
+    """Bounded edits are proposed to be READ before they are applied, so the report
+    shows each operation in full: what it does, the exact line it anchors on, the new
+    text, and the evidence that motivated that one edit."""
+    ops = payload.get("ops")
+    if not isinstance(ops, list):
+        return []
+    L = [f"- bounded edits ({len(ops)}):", "", "```"]
+    for i, op in enumerate(ops, 1):
+        if not isinstance(op, dict):
+            continue
+        L.append(f"{i}. {op.get('op')} @ {str(op.get('anchor', ''))!r}")
+        if op.get("text"):
+            L.append(f"   -> {str(op['text'])!r}")
+        refs = [str(r) for r in (op.get("motivated_by") or [])]
+        if refs:
+            L.append(f"   motivated_by: {', '.join(refs)}")
+    return L + ["```", ""]
+
+
 def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
            cumulative=None, shadow=None, roi=None, gym=None) -> str:
     L = [f"# self-optimize report — {run_id}", ""]
@@ -143,9 +163,16 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
                      f"{loc.get('rationale') or 'no rationale given'}")
         if r.get("prior_rejection"):
             L.append(f"- previously rejected: {r['prior_rejection']} — evidence has changed since")
+        if r["action"].get("type") == "file_ops":
+            L += _ops_block(r["action"].get("payload") or {})
         if r["action"]["tier"] == "A":
             L.append(f"- apply: `/self-optimize apply {r['id']}` · reject: "
                      f"`/self-optimize reject {r['id']} \"<reason>\"`")
+        elif r["action"].get("type") == "file_ops":
+            # the ops block above already shows the whole payload in readable form —
+            # dumping the same JSON again under "manual action" would be noise, and
+            # a bounded edit is not manual work
+            L.append("- tier B: read the edits above, then decide from the dashboard")
         else:
             p = r["action"].get("payload", {})
             body = p.get("diff") or p.get("description") or json.dumps(p, indent=1)
