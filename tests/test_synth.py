@@ -210,6 +210,24 @@ class TestSynth(unittest.TestCase):
         self.assertTrue(synth.check_citation("availplugin:foo@mp", ev))
         self.assertFalse(synth.check_citation("availplugin:bar@mp", ev))
 
+    def test_check_citation_papercut(self):
+        ev = dict(EV, papercuts={"lines": [{"id": "abc123", "date": "2026-08-01",
+                                            "harness": "claude-code", "text": "t"}]})
+        self.assertTrue(synth.check_citation("papercut:abc123", ev))
+        self.assertFalse(synth.check_citation("papercut:ghost", ev))
+        # no papercuts key at all (older evidence pack shape) -> resolves to false,
+        # not a KeyError
+        self.assertFalse(synth.check_citation("papercut:abc123", EV))
+
+    def test_synthesize_accepts_papercut_citation(self):
+        rec = bloat_rec()
+        rec["evidence_refs"] = ["inventory:skill:dusty", "papercut:abc123"]
+        ev = dict(EV, papercuts={"lines": [{"id": "abc123", "date": "2026-08-01",
+                                            "harness": "claude-code", "text": "t"}]})
+        findings, dropped = synth.synthesize([rec], ev, {}, DATA)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(dropped["citations"], 0)
+
     def test_check_citation_hooks_and_settings(self):
         ev = dict(EV)
         ev["inventory"] = dict(EV["inventory"],

@@ -275,7 +275,7 @@ def build_inventory(data_root: Path, evidence_dir: Path | None) -> dict:
 # read poison another's through session-scoped interference (dedupe hooks,
 # permission rules) since parallel subagents share the parent session id
 ANALYST_FILES = {
-    "miner": ["usage.json", "samples.json", "sessions.json", "constraints.json"],
+    "miner": ["usage.json", "samples.json", "sessions.json", "constraints.json", "papercuts.json"],
     "auditor": ["inventory.json", "activation.json", "usage.json", "constraints.json"],
     "evolver": ["artifacts.json", "samples.json", "constraints.json"],
     "labeler": ["samples.json"],

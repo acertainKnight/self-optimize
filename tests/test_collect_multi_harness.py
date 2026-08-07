@@ -267,6 +267,31 @@ class TestCollectMain(unittest.TestCase):
         self.assertEqual(per["claude-code"]["status"], "ok")
         self.assertEqual(files["usage.json"]["totals"]["sessions"], 5)
 
+    def test_papercuts_are_read_once_at_the_merged_level(self):
+        pc = self.tmp / "papercuts.md"
+        pc.write_text("- 2026-08-01 claude-code seeded friction line\n")
+        so_config.load_config(self.state)  # creates config.json with defaults
+        cfg_path = self.state / "config.json"
+        cfg = json.loads(cfg_path.read_text())
+        cfg["papercuts_path"] = str(pc)
+        cfg_path.write_text(json.dumps(cfg))
+        out = self.tmp / "ev-papercuts"
+        files = self._run([], out)
+        self.assertEqual(len(files["papercuts.json"]["lines"]), 1)
+        self.assertIn("seeded friction line", files["papercuts.json"]["lines"][0]["text"])
+
+    def test_absent_papercuts_file_is_a_silent_noop(self):
+        # point at a definitely-nonexistent path within tmp, not the default
+        # $HOME/papercuts.md — this must not depend on the test runner's actual home
+        so_config.load_config(self.state)
+        cfg_path = self.state / "config.json"
+        cfg = json.loads(cfg_path.read_text())
+        cfg["papercuts_path"] = str(self.tmp / "nope" / "papercuts.md")
+        cfg_path.write_text(json.dumps(cfg))
+        out = self.tmp / "ev-no-papercuts"
+        files = self._run([], out)
+        self.assertEqual(files["papercuts.json"]["lines"], [])
+
     def test_every_harness_failing_exits_non_zero(self):
         def boom(*args, **kwargs):
             raise RuntimeError("corpus walk died")

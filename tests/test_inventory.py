@@ -245,7 +245,7 @@ class TestInventory(unittest.TestCase):
             make_fake_claude(root)
             (ev / "sessions.json").write_text('{"sessions": []}')
             (ev / "activation.json").write_text('{"items": {}}')
-            for name in ("usage", "samples", "constraints"):
+            for name in ("usage", "samples", "constraints", "papercuts"):
                 (ev / f"{name}.json").write_text("{}")
             rules = pathlib.Path(d) / "rules.json"
             rules.write_text('{"rules": []}')

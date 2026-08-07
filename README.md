@@ -136,6 +136,10 @@ Merged on `main` and working:
 - Next-run verification with cohort verdicts and a program ROI line: verified token
   savings against analyst tokens spent.
 - Evidence-only adapters for the Codex CLI, the claude.ai conversation export, and opencode.
+- A papercut channel: a standing instruction has agents self-report friction they work
+  around instead of stopping to fix it. `collect.py` folds the file into the evidence
+  pack once per run, the miner clusters recurring lines into findings that cite them, and
+  a finding that is applied and verified archives the lines it covered.
 
 ## Roadmap
 
@@ -146,8 +150,7 @@ Tracked as four waves plus a portfolio epic. Nothing below is implemented.
   Codex rollout parser (#19), one run that merges evidence from every adapter (#20), the
   self-maintaining gym registry and case corpus (#21), the judge runner and scoring (#22),
   an evolver that makes bullet-level incremental edits gated on gym scores instead of
-  whole-file rewrites (#23), inline trigger capture (#24), and a papercut channel where
-  agents self-report friction they worked around (#25).
+  whole-file rewrites (#23) and inline trigger capture (#24).
 - [#41 — Wave 2: gym consumers](https://github.com/acertainKnight/self-optimize/issues/41).
   Durable corrections compiled into enforcement proposals (#28), a curator that dedupes
   and retires skills (#29), a validated failure taxonomy (#30), a silent-failure detector
@@ -402,6 +405,51 @@ fits — a local server wrapper, an open-weights model, an agent CLI. Swapping b
 is a config edit, never a code change. Prompts are built deterministically (fixed
 sections, no timestamps), so identical inputs are reproducible and cacheable.
 
+### Papercut channel
+
+Detection-based mining only sees friction that leaves a trace in the transcript — a
+correction, a retry, a revert. Friction an agent notices and quietly works around leaves
+a clean transcript and recurs in every future session, because nothing ever wrote it
+down. The fix is a self-report channel: a standing instruction, not a hook, so it works
+in every harness today, including ones with no hook support at all.
+
+Paste this into your shared agent instructions file (`AGENTS.md`, `CLAUDE.md`, or
+whatever your harness reads on every session):
+
+    ## Papercuts
+    When you hit friction and work around it instead of stopping to fix it — a wrong
+    instruction, a flaky tool that needed a retry, a missing dependency you routed
+    past — append one line to `~/papercuts.md` and keep working:
+
+        - YYYY-MM-DD <harness> <one-line description of the friction>
+
+    Never stop to fix it. Never write secrets, credentials, API keys, file contents, or
+    anything else you would not want sitting in a plain-text file into that line — only
+    what went wrong and how it showed up.
+
+`collect.py` reads this file once per run, at the merged level rather than per harness,
+since the file's location is not tied to any one harness's config directory — every
+harness that reads your shared instructions file is pointed at the same papercuts file.
+The transcript-miner clusters recurring lines the same way it clusters corrections, into
+findings that cite the covered lines as `papercut:<id>`. When a finding built from a
+papercut cluster is applied and later verified against your real sessions, the lines it
+cited move into an `## Archive` section at the bottom of the file; every unrelated line —
+including a papercut nobody has addressed yet — is left untouched.
+
+An absent file reads as silently empty, not an error: nothing about this channel requires
+you to opt in before the rest of the loop works. Every papercut line still passes through
+the same redaction scrubber as transcript excerpts before it reaches the evidence pack, as
+a second layer behind the "never log secrets" instruction above — defense in depth, not a
+substitute for it.
+
+Override the default path in `config.json`:
+
+    "papercuts_path": "/absolute/path/to/papercuts.md"
+
+Default: `$HOME/papercuts.md` — the one location every harness can reach, since each
+harness's own config dir (`~/.claude`, `~/.codex`, `~/.local/share/opencode`) is otherwise
+private to it.
+
 ### Instances
 
 The config dir is resolved per running instance: `$CLAUDE_CONFIG_DIR` if set, else
@@ -417,6 +465,7 @@ first, that is one corpus and one ledger. Run the loop once, from either instanc
 | key | default | meaning |
 |---|---|---|
 | report_dir | `<state>/reports` | where reports are written |
+| papercuts_path | (empty) -> `$HOME/papercuts.md` | where agents self-report worked-around friction; see Papercut channel |
 | project_include / project_exclude | `["*"]` / `[]` | fnmatch globs over project dir names |
 | since_days | 30 | analysis window |
 | sample_caps | 40 excerpts / 1500 tok / 60k total | bounds analyst input, and cost |

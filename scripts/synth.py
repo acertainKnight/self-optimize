@@ -67,6 +67,9 @@ def check_citation(ref: str, ev: dict) -> bool:
     if kind == "availplugin":
         pool = {p["id"][len("availplugin:"):] for p in ev.get("inventory", {}).get("available_plugins", [])}
         return rest in pool
+    if kind == "papercut":
+        pool = {p["id"] for p in ev.get("papercuts", {}).get("lines", [])}
+        return rest in pool
     return False
 
 
@@ -271,6 +274,8 @@ def main(argv=None):
     ev["artifacts"] = json.loads(art_f.read_text()) if art_f.exists() else {"artifacts": []}
     con_f = evdir / "constraints.json"
     ev["constraints"] = json.loads(con_f.read_text()) if con_f.exists() else {"rejected": []}
+    pc_f = evdir / "papercuts.json"
+    ev["papercuts"] = json.loads(pc_f.read_text()) if pc_f.exists() else {"lines": []}
     loc_f = evdir / "localize.json"
     ev["localize"] = json.loads(loc_f.read_text()) if loc_f.exists() else {}
     ev["rules"] = json.loads(Path(a.rules).read_text())

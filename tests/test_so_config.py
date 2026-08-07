@@ -54,6 +54,13 @@ class TestConfig(unittest.TestCase):
             self.assertTrue(cfg["harnesses"]["codex"]["enabled"])
             self.assertEqual(cfg["harnesses"]["opencode"]["home"], "~/.local/share/opencode")
 
+    def test_papercuts_path_defaults_to_home_and_honors_override(self):
+        self.assertEqual(so_config.papercuts_path(so_config.DEFAULTS),
+                         pathlib.Path.home() / "papercuts.md")
+        cfg = {"papercuts_path": "~/work/papercuts.md"}
+        self.assertEqual(so_config.papercuts_path(cfg),
+                         pathlib.Path.home() / "work" / "papercuts.md")
+
     def test_project_weights_dead_key_deleted(self):
         self.assertNotIn("project_weights", so_config.DEFAULTS)
         with tempfile.TemporaryDirectory() as d:
