@@ -98,11 +98,13 @@ because they cannot be separated. Snapshot metrics like `base_context_est` are o
 number that any later edit moves, so those verify by checking the applied setting is
 still in effect instead of by comparing the number.
 
-**The gym is the missing fifth stage.** Verification tells you whether a change helped
-after you shipped it. The gym is meant to tell you before: a per-artifact corpus of graded
-cases drawn from real usage (failure cases where the artifact fired and a correction
-followed, working cases where it fired and nothing followed), and a judge that scores a
-candidate rewrite on both sides. It is not built yet. See the roadmap below.
+**The gym is the fifth stage.** Verification tells you whether a change helped after
+you shipped it. The gym tells you before: a per-artifact corpus of graded cases drawn
+from real usage (failure cases where the artifact fired and a correction followed,
+working cases where it fired and nothing followed), and a judge that scores a candidate
+rewrite on both sides. Every proposed edit is scored against that corpus before it
+reaches the report, and every scored candidate lands in a per-artifact variant archive
+with its lineage and Pareto front.
 
 ## What ships today
 
