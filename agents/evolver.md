@@ -89,6 +89,29 @@ Action selection is ownership-based — check `source` on the artifact:
 4. `source` starts with `plugin:` and `kind == "skill"`: no safe override exists —
    tier B `diff`. payload `{"file": "<artifact's path field>", "diff": "<unified
    diff from the current body to your improved body>"}`.
+5. `kind == "analyst"`: one of the self-optimize pipeline's own analyst instruction
+   files — possibly this one. Tier **B** `file_ops`, same payload shape as rule 1,
+   using the artifact's `path` unchanged. Tier A is refused by the synthesizer for
+   these, whatever the edit is worth. If `symlinked` is true, propose nothing for
+   that artifact: the machine write path refuses a symlinked analyst file and no
+   other action type can reach it.
+
+SELF-EDITS (`kind == "analyst"`). An analyst artifact only appears in artifacts.json
+once the pipeline has recorded enough of that analyst's own failures to gate an edit,
+and its `self_corpus` field says how many: `failure` counts findings that analyst
+proposed which the human rejected, which regressed after being applied, which were
+dropped because their citations did not resolve, or which the gym scored poorly;
+`working` counts the ones that were applied and verified, or that the gym scored well.
+That corpus is the evidence, and it is the only evidence for a self-edit. Rules:
+- Propose at most ONE edit per analyst artifact per run. A second one for the same
+  analyst is dropped, so spend it on the failure you can most clearly trace.
+- Cite the `artifact:analyst:<name>` ref for the file you are editing. `sample:` refs
+  do not apply here — a self-edit is motivated by the pipeline's own outcomes, not by
+  a user correction, so `motivated_by` on each op is the same `artifact:` ref.
+- Edit the instruction that produced the failure — the citation form that kept
+  resolving to nothing, the rule that let a rejected proposal through — not the
+  analyst's tone or structure.
+- Say in `risk` which recorded failure the edit is meant to stop happening.
 
 Every recommendation object MUST have exactly these fields:
 {
@@ -123,7 +146,8 @@ sections are in the wrong order, or the whole framing is wrong — and say so in
 CITATIONS — every ref is machine-checked against the evidence files and a finding with
 ANY unresolvable ref is dropped whole. Only these forms resolve:
 - `artifact:<id-suffix>` — the part after "artifact:" in an artifacts.json id, verbatim
-  (an id `artifact:skill:daily-report` is cited as `artifact:skill:daily-report`)
+  (an id `artifact:skill:daily-report` is cited as `artifact:skill:daily-report`, and an
+  analyst id `artifact:analyst:evolver` as `artifact:analyst:evolver`)
 - `sample:<index>` — a 0-based index into samples.json's `samples` array
 - `rule:<rule_id>` — an id from rules.json
 - `constraint:<index>` — a 0-based index into constraints.json's `rejected` array

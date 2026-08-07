@@ -82,6 +82,34 @@ def _available_plugins(data_root: Path, installed: dict) -> list:
     return out
 
 
+def _analyst_artifacts(state, cfg: dict) -> list:
+    """The plugin's own analyst instruction files, offered to the evolver for a
+    bounded self-edit — but only once the loop has enough of its own recorded
+    failures to gate one. The gate is the gym's ordinary case floor applied to the
+    self-corpus: below it, an analyst edit would be a taste-based rewrite of the
+    thing that judges everything else, so the file is not shown at all."""
+    import gym
+    import selfsignal
+    floor = int((cfg.get("gym") or {}).get("min_cases_per_side", 3))
+    out = []
+    for aid, path in selfsignal.analyst_files().items():
+        counts = gym.self_case_counts(state, aid)
+        if counts["failure"] < floor:
+            continue
+        try:
+            body = path.read_text(errors="replace")[:8000]
+        except OSError:
+            continue
+        entry = {"id": f"artifact:{aid}", "kind": "analyst", "source": selfsignal.HARNESS,
+                 "path": str(path), "activation_count": 0,
+                 "symlinked": path.is_symlink(), "body": body, "self_corpus": counts}
+        front = gym.front_context(state, aid, cfg)
+        if front:
+            entry["front"] = front
+        out.append(entry)
+    return out
+
+
 def build_artifacts(inv: dict, evidence_dir, state=None, cfg=None) -> dict:
     """The bodies the evolver reads. With a state dir, each artifact also carries the
     Pareto front of its already-scored versions (`front`), so the evolver reflects on
@@ -114,6 +142,8 @@ def build_artifacts(inv: dict, evidence_dir, state=None, cfg=None) -> dict:
             if front:
                 entry["front"] = front
         artifacts.append(entry)
+    if state is not None:
+        artifacts += _analyst_artifacts(state, cfg or {})
     return {"schema_version": so_schema.EVIDENCE_VERSION, "harness": so_schema.HARNESS,
             "artifacts": artifacts}
 
@@ -346,9 +376,10 @@ def main(argv=None):
     update_last_metrics(state, base_context_est=inv["base_context_est"],
                         unused_surface_count=len(inv["unused"]))
     fronts = sum(1 for x in art["artifacts"] if x.get("front"))
+    analysts = sum(1 for x in art["artifacts"] if x.get("kind") == "analyst")
     print(f"skills={len(inv['skills'])} agents={len(inv['agents'])} mcp={len(inv['mcp_servers'])} "
           f"unused={len(inv['unused'])} base_context_est={inv['base_context_est']} "
-          f"artifacts={len(art['artifacts'])} fronts={fronts}")
+          f"artifacts={len(art['artifacts'])} fronts={fronts} analysts={analysts}")
 
 
 if __name__ == "__main__":

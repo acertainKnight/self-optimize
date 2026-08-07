@@ -10,6 +10,7 @@ import enforcement
 import ledger as ledger_mod
 import metriclib
 import papercuts
+import selfsignal
 
 
 INVENTORY_METRICS = ("base_context_est", "unused_surface_count")
@@ -205,8 +206,14 @@ def main(argv=None):
         settings = None
     rows = verify_entries(entries, sessions, inventory, cfg, settings=settings)
     enf_rows = verify_enforcement(entries, enforcement.read_metrics_rows(state), cfg)
+    # self-application guard: an applied edit to an analyst instruction file is
+    # re-checked against the run that followed it. A session metric cannot see
+    # this change — it altered how the pipeline reasons, so it is graded on the
+    # pipeline's own numbers (citations that resolve, applies that verify).
+    self_rows = selfsignal.self_edit_rows(entries, state, cfg["verify"]["min_rel_change"])
     out_path = Path(a.out)
-    out_path.write_text(json.dumps({"rows": rows, "enforcement": enf_rows}, indent=1))
+    out_path.write_text(json.dumps({"rows": rows, "enforcement": enf_rows,
+                                    "self_edits": self_rows}, indent=1))
     out_path.chmod(0o600)
     for r in rows:
         if r["verdict"] in ("verified", "regressed"):
@@ -245,6 +252,9 @@ def main(argv=None):
     if enf_rows:
         print("enforcement predictions: "
               + ", ".join(f"{r['id']}={r['verdict']}" for r in enf_rows))
+    for r in self_rows:
+        if r["verdict"] == "regressed":
+            print(f"SELF-EDIT REGRESSION: {r['id']} ({r['artifact']}) — {r['note']}")
 
 
 if __name__ == "__main__":

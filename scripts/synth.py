@@ -10,6 +10,7 @@ from pathlib import Path
 import enforcement
 import ledger as ledger_mod
 import schema as so_schema
+import selfsignal
 
 ALLOWED_SETTING_ROOTS = {"skillOverrides", "enabledPlugins", "model", "outputStyle", "effortLevel"}
 # mirrors adapters/claude_code/templates.py's ALLOWED_TOML_ROOTS -- duplicated,
@@ -156,6 +157,13 @@ def guard(rec: dict, data_root: Path, extra_roots=None) -> bool:
         # no extra-root branch: bounded edits only ever touch an EXISTING artifact,
         # and memory notes stay create-only
         f = p.get("path", "")
+        if selfsignal.is_analyst_path(f):
+            # self-application: this plugin's own analyst instruction files are
+            # editable by the same bounded-edit path, and by nothing else. The
+            # match is against the analyst files themselves (symlinks resolved),
+            # not against a directory, so no other file in the plugin is reachable
+            # this way, and schema.validate_rec has already pinned it to tier B.
+            return True
         return (str(f).endswith(".md")
                 and any(_under(f, data_root, sub) for sub in ("skills", "agents", "workflows")))
     if t in ("file_create", "file_replace"):
@@ -211,6 +219,21 @@ def op_refs(rec: dict) -> list:
             for r in (op.get("motivated_by") or []) if isinstance(r, str)]
 
 
+def self_edit_block(rec: dict, ev: dict):
+    """The self-corpus this finding's edit is gated by, when it edits an analyst
+    instruction file. Counts come from the artifacts.json entry inventory.py
+    wrote for that analyst, which is the same gate that decided the evolver was
+    allowed to see the file at all."""
+    aid = selfsignal.target_artifact(rec)
+    if not aid:
+        return None
+    entry = next((a for a in (ev.get("artifacts") or {}).get("artifacts") or []
+                  if isinstance(a, dict) and a.get("id") == f"artifact:{aid}"), None)
+    counts = (entry or {}).get("self_corpus") or {}
+    return {"analyst": aid, "failure_cases": counts.get("failure", 0),
+            "working_cases": counts.get("working", 0)}
+
+
 def tier1_delta(rec: dict, ev: dict):
     inv = ev.get("inventory", {})
     sessions = ev["usage"]["totals"]["sessions"]
@@ -233,9 +256,9 @@ def tier1_delta(rec: dict, ev: dict):
 
 
 def synthesize(analyst_recs: list, ev: dict, led_entries: dict, data_root: Path, extra_roots=None):
-    dropped = {"invalid": 0, "citations": 0, "guard": 0, "suppressed": [],
-               "citation_detail": []}
-    seen, findings = set(), []
+    dropped = {"invalid": 0, "citations": 0, "citation_checked": 0, "guard": 0,
+               "suppressed": [], "citation_detail": [], "self_capped": []}
+    seen, findings, self_edits = set(), [], set()
     for rec in analyst_recs:
         src = rec.pop("_analyst", None) if isinstance(rec, dict) else None
         if not isinstance(rec, dict) or so_schema.validate_rec(rec):
@@ -246,6 +269,7 @@ def synthesize(analyst_recs: list, ev: dict, led_entries: dict, data_root: Path,
             continue
         refs = dict.fromkeys(rec["evidence_refs"] + op_refs(rec))
         failed_refs = [r for r in refs if not check_citation(r, ev)]
+        dropped["citation_checked"] += 1
         if failed_refs:
             dropped["citations"] += 1
             dropped["citation_detail"].append({"analyst": src, "title": rec.get("title", ""),
@@ -254,6 +278,16 @@ def synthesize(analyst_recs: list, ev: dict, led_entries: dict, data_root: Path,
         if not guard(rec, data_root, extra_roots):
             dropped["guard"] += 1
             continue
+        # one self-edit per analyst per run, by construction. The loop improving
+        # its own analysts is the slowest thing it does: one bounded edit, then a
+        # whole run's worth of outcomes before the next one is even proposed.
+        self_target = selfsignal.target_artifact(rec)
+        if self_target:
+            if self_target in self_edits:
+                dropped["self_capped"].append({"analyst": self_target,
+                                               "title": rec.get("title", "")})
+                continue
+            self_edits.add(self_target)
         # "durable" is machine-checked, not taken on the analyst's word: a check
         # that blocks a tool call is proposed off a correction that recurred
         # across sessions, never off one bad afternoon. Counted as invalid —
@@ -263,6 +297,13 @@ def synthesize(analyst_recs: list, ev: dict, led_entries: dict, data_root: Path,
                 < enforcement.MIN_SESSIONS):
             dropped["invalid"] += 1
             continue
+        if src:
+            # provenance, carried into the ledger: which analyst proposed this.
+            # It is what lets a later run attribute an outcome back to the
+            # analyst that earned it (see selfsignal.analyst_of). Deliberately
+            # not part of rec_id — the same action from a different analyst is
+            # still the same recommendation.
+            rec["analyst"] = src
         rec["id"] = so_schema.rec_id(rec)
         rec["evidence_hash"] = so_schema.evidence_hash(rec)
         if rec["id"] in seen:
@@ -276,6 +317,9 @@ def synthesize(analyst_recs: list, ev: dict, led_entries: dict, data_root: Path,
         if prior and prior.get("status") == "rejected":
             rec["prior_rejection"] = prior.get("reason", "")
         rec["delta_tokens"] = tier1_delta(rec, ev)
+        block = self_edit_block(rec, ev)
+        if block:
+            rec["self_edit"] = block
         hits = _localize_hits(rec["evidence_refs"], ev, ev.get("localize") or {})
         if hits:
             rec["deep_localize"] = hits
@@ -328,7 +372,8 @@ def main(argv=None):
     out_path.chmod(0o600)
     print(f"findings={len(findings)} dropped_invalid={dropped['invalid']} "
           f"dropped_citations={dropped['citations']} dropped_guard={dropped['guard']} "
-          f"suppressed={len(dropped['suppressed'])}")
+          f"suppressed={len(dropped['suppressed'])} "
+          f"self_capped={len(dropped['self_capped'])}")
 
 
 if __name__ == "__main__":
