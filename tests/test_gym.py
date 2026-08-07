@@ -249,5 +249,184 @@ class TestCliAndPermissions(GymCase):
         self.assertEqual({r["id"] for r in rows}, {"skill:alpha", "agent:helper"})
 
 
+STUB_JUDGE = '''\
+"""Stub judge backend: reads a prompt on stdin, writes a JSON verdict on stdout.
+Verdict rule — does the candidate artifact text still mention the keyword the case
+turns on? That makes a deliberately degraded candidate score worse, deterministically.
+"""
+import json, sys
+
+prompt = sys.stdin.read()
+side = [l for l in prompt.splitlines() if l.startswith("CASE SIDE: ")][0].split(": ")[1]
+head, _, rest = prompt.partition("--- CANDIDATE ARTIFACT TEXT ---")
+candidate, _, _ = rest.partition("--- END CANDIDATE ARTIFACT TEXT ---")
+good = "KEYWORD" in candidate
+key = "prevented" if side == "failure" else "preserved"
+sys.stdout.write(json.dumps({key: good}))
+'''
+
+CHATTY_JUDGE = '''\
+import json, sys
+prompt = sys.stdin.read()
+side = [l for l in prompt.splitlines() if l.startswith("CASE SIDE: ")][0].split(": ")[1]
+key = "prevented" if side == "failure" else "preserved"
+sys.stdout.write("Sure! Here is my verdict:\\n" + json.dumps({key: True}) + "\\nHope that helps.")
+'''
+
+BROKEN_JUDGE = 'import sys\nsys.stderr.write("model unavailable\\n")\nsys.exit(1)\n'
+
+
+class TestScoring(GymCase):
+    def setUp(self):
+        super().setUp()
+        self.stub = self.tmp / "stub_judge.py"
+        self.stub.write_text(STUB_JUDGE)
+        self.good = self.tmp / "good.md"
+        self.good.write_text("# artifact\nAlways run the KEYWORD check before finishing.\n")
+        self.degraded = self.tmp / "degraded.md"
+        self.degraded.write_text("# artifact\nDo whatever seems reasonable.\n")
+
+    def stock_corpus(self, n=4, skill="alpha"):
+        ev = write_pack(
+            self.tmp / "ev", skills=(skill,),
+            sessions=[session("f", [f"skill:{skill}"], corrections=n),
+                      session("w", [f"skill:{skill}"], corrections=0)],
+            samples=[correction("f", i) for i in range(1, n + 1)],
+            working=[working_row("w", i) for i in range(1, n + 1)])
+        gym.accrue(self.state, [ev], "2026-06-01", self.cfg)
+
+    def with_judge(self, script: pathlib.Path, model="stub-model"):
+        cfg = json.loads(json.dumps(self.cfg))
+        cfg["gym"]["judge"] = {"command": [sys.executable, str(script), "--model", "{model}"],
+                               "model": model, "timeout_s": 30}
+        return cfg
+
+    def test_degraded_candidate_preserves_visibly_less(self):
+        self.stock_corpus()
+        cfg = self.with_judge(self.stub)
+        cur = gym.score_artifact(self.state, "skill:alpha", self.good.read_text(), cfg)
+        bad = gym.score_artifact(self.state, "skill:alpha", self.degraded.read_text(), cfg)
+        self.assertFalse(cur["unscorable"], cur["reason"])
+        self.assertEqual(cur["preserved"], {"n": 4, "of": 4})
+        self.assertEqual(bad["preserved"], {"n": 0, "of": 4})
+        self.assertLess(bad["preserved"]["n"], cur["preserved"]["n"])
+        self.assertEqual(cur["prevented"], {"n": 4, "of": 4})
+        self.assertEqual(bad["prevented"], {"n": 0, "of": 4})
+
+    def test_backend_swap_is_config_only(self):
+        self.stock_corpus()
+        other = self.tmp / "other_backend.py"
+        other.write_text(CHATTY_JUDGE)   # different CLI, different output style
+        first = gym.score_artifact(self.state, "skill:alpha", self.degraded.read_text(),
+                                   self.with_judge(self.stub))
+        second = gym.score_artifact(self.state, "skill:alpha", self.degraded.read_text(),
+                                    self.with_judge(other, model="other-model"))
+        self.assertEqual(first["preserved"], {"n": 0, "of": 4})
+        self.assertEqual(second["preserved"], {"n": 4, "of": 4})   # same code, new backend
+        self.assertEqual(second["errors"], 0)
+
+    def test_missing_judge_config_is_a_refusal_not_a_fallback(self):
+        self.stock_corpus()
+        with self.assertRaises(gym.JudgeNotConfigured):
+            gym.score_artifact(self.state, "skill:alpha", self.good.read_text(), self.cfg)
+
+    def test_cli_refusal_prints_instructions_and_exits_2(self):
+        self.stock_corpus()
+        import contextlib, io
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out), \
+                self.assertRaises(SystemExit) as cm:
+            gym.main(["score", "--artifact", "skill:alpha", "--candidate", str(self.good),
+                      "--state", str(self.state)])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("gym.judge.command", err.getvalue())
+        self.assertEqual(out.getvalue(), "")
+
+    def test_below_floor_short_circuits_without_calling_the_judge(self):
+        self.stock_corpus(n=2)
+        missing = self.tmp / "no_such_backend.py"   # any judge call would blow up
+        cfg = self.with_judge(missing)
+        result = gym.score_artifact(self.state, "skill:alpha", self.good.read_text(), cfg)
+        self.assertTrue(result["unscorable"])
+        self.assertIn("below case floor", result["reason"])
+        self.assertEqual(result["per_case"], [])
+        self.assertEqual(result["tokens_est"], 0)
+
+    def test_retired_and_unknown_artifacts_are_unscorable(self):
+        self.stock_corpus()
+        cfg = self.with_judge(self.stub)
+        unknown = gym.score_artifact(self.state, "skill:ghost", self.good.read_text(), cfg)
+        self.assertTrue(unknown["unscorable"])
+        self.assertIn("not in the gym registry", unknown["reason"])
+        gone = write_pack(self.tmp / "ev-gone", skills=("other",))
+        for run in ("2026-06-02", "2026-06-03", "2026-06-04"):
+            gym.accrue(self.state, [gone], run, self.cfg)
+        retired = gym.score_artifact(self.state, "skill:alpha", self.good.read_text(), cfg)
+        self.assertTrue(retired["unscorable"])
+        self.assertIn("retired", retired["reason"])
+
+    def test_judge_errors_do_not_become_scores(self):
+        self.stock_corpus()
+        broken = self.tmp / "broken.py"
+        broken.write_text(BROKEN_JUDGE)
+        result = gym.score_artifact(self.state, "skill:alpha", self.good.read_text(),
+                                    self.with_judge(broken))
+        self.assertTrue(result["unscorable"])
+        self.assertEqual(result["errors"], 8)
+        self.assertEqual(result["prevented"], {"n": 0, "of": 0})
+        self.assertIn("too few usable verdicts", result["reason"])
+
+    def test_budget_skips_cases_instead_of_scoring_on_a_slice(self):
+        self.stock_corpus()
+        result = gym.score_artifact(self.state, "skill:alpha", self.good.read_text(),
+                                    self.with_judge(self.stub), budget=200)
+        self.assertGreater(result["skipped_budget"], 0)
+        self.assertTrue(result["unscorable"])
+        self.assertIn("budget", result["reason"])
+
+    def test_prompts_are_deterministic_and_carry_no_timestamps(self):
+        self.stock_corpus()
+        corpus = gym.load_corpus(gym.gym_dir(self.state), "skill:alpha")
+        case = corpus["failure"][0]
+        a = gym.build_prompt("skill:alpha", "text", case, "failure")
+        b = gym.build_prompt("skill:alpha", "text", case, "failure")
+        self.assertEqual(a, b)
+        self.assertNotIn(case["ts"], a)
+        self.assertIn("CASE SIDE: failure", a)
+        self.assertIn('{"prevented": true}', a)
+
+    def test_score_writes_owner_only_json_for_the_report(self):
+        self.stock_corpus()
+        cfgfile = self.state / "config.json"
+        cfg = json.loads(cfgfile.read_text())
+        cfg["gym"] = {"judge": {"command": [sys.executable, str(self.stub)],
+                                "model": "stub-model", "timeout_s": 30}}
+        cfgfile.write_text(json.dumps(cfg))
+        out = self.tmp / "score.json"
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            gym.main(["score", "--artifact", "skill:alpha", "--candidate", str(self.good),
+                      "--state", str(self.state), "--out", str(out)])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+        written = json.loads(out.read_text())
+        self.assertFalse(written["unscorable"])
+        self.assertEqual(written["candidate"], str(self.good))
+
+
+class TestVerdictParsing(unittest.TestCase):
+    def test_bare_json(self):
+        self.assertTrue(gym.parse_verdict('{"prevented": true}', "failure"))
+        self.assertFalse(gym.parse_verdict('{"preserved": false}', "working"))
+
+    def test_json_wrapped_in_chatter(self):
+        self.assertTrue(gym.parse_verdict('Verdict:\n{"preserved": true}\ndone', "working"))
+
+    def test_missing_or_non_boolean_verdict_raises(self):
+        for bad in ("", "no idea", '{"prevented": "yes"}', '{"preserved": true}'):
+            with self.assertRaises(gym.JudgeError):
+                gym.parse_verdict(bad, "failure")
+
+
 if __name__ == "__main__":
     unittest.main()

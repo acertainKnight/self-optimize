@@ -17,8 +17,11 @@ DEFAULTS = {
     "max_budget_tokens": 400000,
     "retain_runs": 10,
     "verify": {"min_sessions": 10, "min_rel_change": 0.10},
+    # judge.command is deliberately empty: the gym has NO default backend or provider.
+    # You name the CLI that judges cases; missing config is a refusal, not a fallback.
     "gym": {"min_cases_per_side": 3, "max_cases_per_side": 20,
-            "retire_after_absent_runs": 3},
+            "retire_after_absent_runs": 3,
+            "judge": {"command": [], "model": "", "timeout_s": 120}},
 }
 
 

@@ -330,7 +330,60 @@ tier-B items you selected for assisted work — those are never run automaticall
 them together with the agent afterward. Each decide run logs what happened to
 `<config-dir>/self-optimize/state/decisions/`.
 
-### 
+### Eval gym
+
+Every full run also updates an eval gym under `<config-dir>/self-optimize/gym/`: for
+each optimizable artifact (skill, agent, hook, guidance block) it keeps a corpus of
+graded cases mined from your own sessions — *failure cases*, where the artifact was
+active and you corrected the assistant, and *working cases*, where it was active and
+nothing needed correcting. That corpus is what a proposed rewrite gets checked
+against, instead of taste.
+
+    python3 scripts/gym.py status --state <config-dir>/self-optimize
+
+The registry is derived from the inventory step, never hand-maintained: a new skill on
+disk registers itself on the next run with an empty corpus, and an artifact missing
+from three consecutive runs is retired and dropped from scoring (it un-retires with
+its corpus intact if it comes back). Below the case floor — fewer than 3 cases on
+either side — the gym reports `unscorable` and refuses to emit a number, because a
+score off two cases is noise. Cases deduplicate across overlapping collection windows
+and age out FIFO past the per-artifact cap.
+
+The corpus holds real transcript excerpts (redaction-scrubbed, mode 0600). It lives in
+your state dir and is never committed anywhere.
+
+### Scoring a candidate
+
+    python3 scripts/gym.py score --artifact skill:<name> --candidate <file> --state <config-dir>/self-optimize
+
+A judge reads the candidate text plus one case and answers a fixed JSON verdict, and
+the result is always two numbers: how many failure cases the candidate would have
+prevented, and how many working cases it preserves. Below the floor it short-circuits
+to `unscorable` without spending a single judge call, and cases that do not fit
+`--max-budget` are skipped rather than truncated.
+
+Both numbers, every time, and no auto-apply on either of them. A loop that optimizes
+one number will find ways to game that number: Prime Intellect's
+[prime-agent](https://github.com/PrimeIntellect-ai/prime-agent) rewrites its own
+harness mid-session with no held-out validation, and in their Factorio case study the
+refine loop climbed the production metric partly by discovering reward hacks — spawning
+resources outright instead of building production. The two-sided score is the check on
+a candidate that "fixes" complaints by breaking what already worked, and you ratifying
+every apply is the check on the score itself.
+
+### Judge backend
+
+There is no default judge. `gym.judge.command` is empty until you set it, and scoring
+refuses (with instructions) rather than falling back to anyone's API:
+
+    "gym": {"judge": {"command": ["<your-cli>", "run", "--model", "{model}"],
+                      "model": "<your-model-id>", "timeout_s": 120}}
+
+The contract is deliberately small: your command reads the prompt on stdin and writes
+`{"prevented": true|false}` (or `{"preserved": ...}`) on stdout. Anything CLI-invokable
+fits — a local server wrapper, an open-weights model, an agent CLI. Swapping backends
+is a config edit, never a code change. Prompts are built deterministically (fixed
+sections, no timestamps), so identical inputs are reproducible and cacheable.
 
 ### Instances
 
@@ -356,6 +409,7 @@ first, that is one corpus and one ledger. Run the loop once, from either instanc
 | gym.min_cases_per_side | 3 | fewer cases than this on either side and the artifact is reported unscorable |
 | gym.max_cases_per_side | 20 | per-artifact corpus cap; older cases age out FIFO |
 | gym.retire_after_absent_runs | 3 | consecutive runs an artifact can be missing from the inventory before it is retired |
+| gym.judge | `{"command": [], "model": "", "timeout_s": 120}` | the CLI that judges gym cases: reads a prompt on stdin, writes a JSON verdict on stdout, `{model}` substituted in any argument. Empty by default — no vendor, no fallback; scoring refuses until you set it |
 
 ### Cost
 
