@@ -232,6 +232,31 @@ class TestSynth(unittest.TestCase):
         self.assertFalse(synth.check_citation(None, EV))
         self.assertFalse(synth.check_citation(42, EV))
 
+    def test_deep_localize_attaches_by_session_ref(self):
+        rec = bloat_rec()
+        rec["evidence_refs"] = ["inventory:skill:dusty", "session:s1"]
+        localized = {"s1": {"bracket": [3, 4], "turns_total": 8, "calls": 3,
+                            "rationale": "went sideways here"}}
+        ev = dict(EV, localize=localized)
+        findings, _ = synth.synthesize([rec], ev, {}, DATA)
+        self.assertEqual(findings[0]["deep_localize"], [localized["s1"]])
+
+    def test_deep_localize_attaches_by_sample_session_field(self):
+        rec = bloat_rec()
+        rec["evidence_refs"] = ["inventory:skill:dusty", "sample:0"]
+        ev = dict(EV, samples={"samples": [{"user_text": "no, wrong", "session": "s9"}]},
+                  localize={"s9": {"bracket": [0, 1], "turns_total": 4, "calls": 2,
+                                   "rationale": "r"}})
+        findings, _ = synth.synthesize([rec], ev, {}, DATA)
+        self.assertEqual(findings[0]["deep_localize"][0]["bracket"], [0, 1])
+
+    def test_deep_localize_absent_when_no_matching_session(self):
+        rec = bloat_rec()
+        ev = dict(EV, localize={"unrelated-session": {"bracket": [0, 1], "turns_total": 4,
+                                                       "calls": 2, "rationale": "r"}})
+        findings, _ = synth.synthesize([rec], ev, {}, DATA)
+        self.assertNotIn("deep_localize", findings[0])
+
     def test_main_writes_findings_with_600_perms(self):
         import json, tempfile
         base = pathlib.Path(tempfile.mkdtemp())

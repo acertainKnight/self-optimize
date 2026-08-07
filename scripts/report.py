@@ -136,6 +136,11 @@ def render(run_id, findings, dropped, verify_rows, trend_rows, usage, footer,
         gs = (gym or {}).get(r["id"])
         if gs:
             L.append(_gym_line(gs))
+        for loc in r.get("deep_localize") or []:
+            b = loc.get("bracket") or [0, 0]
+            L.append(f"- deep localize: session went off track around turn {b[0] + 1}-{b[1] + 1} "
+                     f"of {loc.get('turns_total')} ({loc.get('calls')} judge calls) — "
+                     f"{loc.get('rationale') or 'no rationale given'}")
         if r.get("prior_rejection"):
             L.append(f"- previously rejected: {r['prior_rejection']} — evidence has changed since")
         if r["action"]["tier"] == "A":

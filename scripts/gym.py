@@ -380,7 +380,11 @@ def parse_verdict(stdout: str, side: str) -> bool:
     return obj[key]
 
 
-def run_judge(judge: dict, prompt: str, side: str) -> bool:
+def _invoke_judge(judge: dict, prompt: str) -> str:
+    """The one subprocess driver every judge call goes through: a CLI that reads
+    the prompt on stdin and writes its verdict JSON on stdout. Shared by run_judge
+    (gym scoring) and localize.py (bisection localization) so there is exactly one
+    place in this plugin that shells out to the configured backend."""
     cmd = [str(part).replace("{model}", str(judge.get("model") or ""))
            for part in judge["command"]]
     try:
@@ -390,7 +394,11 @@ def run_judge(judge: dict, prompt: str, side: str) -> bool:
         raise JudgeError(f"judge command failed: {e}") from e
     if proc.returncode != 0:
         raise JudgeError(f"judge exited {proc.returncode}: {proc.stderr.strip()[:200]}")
-    return parse_verdict(proc.stdout, side)
+    return proc.stdout
+
+
+def run_judge(judge: dict, prompt: str, side: str) -> bool:
+    return parse_verdict(_invoke_judge(judge, prompt), side)
 
 
 # ---------------------------------------------------------------- scoring
