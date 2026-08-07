@@ -21,6 +21,8 @@ DEFAULTS = {
     "since_days": 30,
     "sample_caps": {"excerpts": 40, "tokens_per_excerpt": 1500, "total_tokens": 60000},
     "correction_regex": "",  # empty -> collector default
+    "completion_claim_regex": "",  # empty -> collector default (silent-failure prefilter)
+    "silent_failure_regex": "",  # empty -> collector default (silent-failure prefilter)
     "papercuts_path": "",  # empty -> <home>/papercuts.md — see README's Papercut channel
     "harnesses": {name: {"enabled": True, **roots}
                   for name, roots in HARNESS_DEFAULTS.items()},

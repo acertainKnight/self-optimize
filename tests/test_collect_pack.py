@@ -166,6 +166,60 @@ class TestPack(unittest.TestCase):
         written = json.loads((out / "sessions.json").read_text())["sessions"][0]
         self.assertIn("skill:tdd", written["activation"])
 
+    def test_silent_failure_candidate_marked_in_samples_and_counted_in_usage(self):
+        root = pathlib.Path(self.tmp) / "silent"
+        (root / "projects" / "-silent").mkdir(parents=True)
+        lines = [
+            json.dumps({"type": "user", "uuid": "u1", "timestamp": "2026-06-22T10:00:00Z",
+                        "message": {"role": "user",
+                                    "content": "the login button is broken, please fix it"}}),
+            json.dumps({"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+                        "timestamp": "2026-06-22T10:00:05Z",
+                        "message": {"role": "assistant", "model": "m",
+                                    "usage": {"input_tokens": 5, "output_tokens": 5},
+                                    "content": [{"type": "text",
+                                                 "text": "Fixed! The tests should pass now."}]}}),
+            json.dumps({"type": "user", "uuid": "u2", "parentUuid": "a1",
+                        "timestamp": "2026-06-22T10:00:10Z",
+                        "message": {"role": "user",
+                                    "content": "still failing, same error as before"}}),
+        ]
+        (root / "projects" / "-silent" / "s.jsonl").write_text("\n".join(lines) + "\n")
+        pack = collect.collect_corpus(root, None, ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
+        self.assertEqual(len(pack["samples"]), 1)
+        smp = pack["samples"][0]
+        self.assertTrue(smp["silent_failure_candidate"])
+        # marked but still kind="correction" -- the shape the gym already reads as a
+        # failure case for whatever artifact was active in this session (scripts/gym.py
+        # accrue() only skips samples whose kind isn't None/"correction")
+        self.assertEqual(smp["kind"], "correction")
+        self.assertEqual(pack["usage"]["waste"]["silent_failure_candidates_total"], 1)
+        out = pathlib.Path(self.tmp) / "ev-silent"
+        collect.write_pack(out, pack)
+        written = json.loads((out / "samples.json").read_text())["samples"][0]
+        self.assertTrue(written["silent_failure_candidate"])
+
+    def test_benign_followups_do_not_inflate_silent_failure_count(self):
+        root = pathlib.Path(self.tmp) / "benign"
+        (root / "projects" / "-benign").mkdir(parents=True)
+        lines = [
+            json.dumps({"type": "user", "uuid": "u1", "timestamp": "2026-06-22T10:00:00Z",
+                        "message": {"role": "user", "content": "please fix the login bug"}}),
+            json.dumps({"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+                        "timestamp": "2026-06-22T10:00:05Z",
+                        "message": {"role": "assistant", "model": "m",
+                                    "usage": {"input_tokens": 5, "output_tokens": 5},
+                                    "content": [{"type": "text",
+                                                 "text": "Fixed! The tests should pass now."}]}}),
+            json.dumps({"type": "user", "uuid": "u2", "parentUuid": "a1",
+                        "timestamp": "2026-06-22T10:00:10Z",
+                        "message": {"role": "user", "content": "thanks, that's perfect"}}),
+        ]
+        (root / "projects" / "-benign" / "s.jsonl").write_text("\n".join(lines) + "\n")
+        pack = collect.collect_corpus(root, None, ["*"], [], collect.DEFAULT_CORRECTION_RE, CAPS)
+        self.assertEqual(pack["samples"], [])
+        self.assertEqual(pack["usage"]["waste"]["silent_failure_candidates_total"], 0)
+
     def test_working_excerpts_only_from_sessions_with_no_correction(self):
         root = pathlib.Path(self.tmp) / "clean"
         (root / "projects" / "-clean").mkdir(parents=True)
