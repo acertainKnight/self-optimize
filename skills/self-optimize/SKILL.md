@@ -38,6 +38,9 @@ matching command, echo its output verbatim to the user, then regenerate the dash
   new ledger state — `python3 SCRIPTS/dashboard.py --evidence <newest dir under
   STATE/evidence> --state STATE --run-id <that dir's name>` — and print the
   `DASHBOARD:` line plus an `open <path>` hint.
+- After `apply`, `rollback`, `decide` or `adopt`: also run the cortex sync (step 7
+  below) with the same evidence dir, so an applied rule reaches the brain and a
+  rolled-back one is archived there.
 
 ## Full run
 
@@ -179,6 +182,14 @@ matching command, echo its output verbatim to the user, then regenerate the dash
    printed top-5 with their `/self-optimize apply <id>` / `reject <id>` hints. Then run
    `python3 SCRIPTS/dashboard.py --evidence EV --state STATE --run-id RUN_ID` and print
    the `DASHBOARD:` line plus an `open <path>` hint.
+7. **Cortex sync (optional, off unless configured):**
+   `python3 SCRIPTS/cortex_writer.py --evidence EV --state STATE` — print its `cortex:`
+   lines. With `CORTEX_BRAIN_URL` and `CORTEX_API_TOKEN` unset it prints
+   `cortex: off` and sends nothing. Set, it sends the `learned` rule or warning of
+   every applied or adopted finding, archives the ones rolled back or regressed, and
+   sends a pointer (name, SKILL.md path, description) for every model-invocable skill
+   in the inventory. Only derived statements and reference ids leave the machine;
+   never transcript text or skill bodies. It always exits 0.
 
 Rules for the runner: never read raw transcripts yourself — everything flows through
 the evidence pack; do not exceed the four analyst agents (miner, auditor, evolver,

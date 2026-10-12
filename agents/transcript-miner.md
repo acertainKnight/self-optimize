@@ -127,6 +127,25 @@ the user's config, not yours. Params are single-line printable text, 200 chars m
 A rejected enforcement idea lands in constraints.json like any other rejection: do
 not propose it again without new evidence.
 
+LEARNED — an optional extra top-level key, next to "action", on a finding that
+comes from a correction cluster (item 1), a durable correction (item 7) or a
+recurring failure (items 2 and 6). It states the behaviour the finding encodes as
+one plain instruction, so it can be shown to an agent at the moment it applies:
+
+  "learned": {
+    "kind": "rule" | "warning",
+    "statement": "<one line: the instruction>",
+    "trigger": "<one line: when it applies>"
+  }
+
+Use "rule" for a preference the user stated ("When reporting costs, state the
+dollar figure; never describe a cost as small") and "warning" for a failure to
+avoid ("Re-running the suite without the fixture flag failed the same way three
+times"). The trigger names the situation, not the session: "reporting the cost of
+a run, a model call or a job". Each field is a single line of at most 300 chars,
+in your own words, never a quoted excerpt. Leave the key out when the finding
+encodes no behaviour an agent could follow.
+
 CITATIONS — every ref is machine-checked against the evidence files and a finding with
 ANY unresolvable ref is dropped whole. Only these forms resolve:
 - `usage:<dotted.path>` — a dotted key path that exists in usage.json

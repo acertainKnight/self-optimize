@@ -37,6 +37,16 @@ Single-user, per-machine, no telemetry. Trust boundaries and mitigations:
    reversible; a planted `~/Downloads` file would need local home-dir write access,
    which already permits easier attacks (editing settings.json, planting a hook), so
    amend is not gated behind an explicit path.
+6. **Learned rules → a cortex brain (opt-in).** With `CORTEX_BRAIN_URL` and
+   `CORTEX_API_TOKEN` set, `scripts/cortex_writer.py` posts to that one URL, with
+   that bearer token, and nowhere else. What it sends: the one-line `learned`
+   statement and trigger of findings you applied or adopted (written by the miner
+   from redacted evidence, validated as single lines of at most 300 characters),
+   reference ids (finding id, cited session ids, dates), and each skill's name,
+   SKILL.md path and description. What it never sends: transcript text, excerpts,
+   evidence files, or skill bodies. A poisoned `learned` statement could only reach
+   the brain through a finding you approved; the brain stores it at its agent trust
+   tier. Unset either variable and the writer sends nothing.
 
 Residual risks, stated honestly: regex+entropy redaction is not perfect; injection
 framing is mitigation, not guarantee; path guards normalize lexically and deliberately

@@ -7,8 +7,9 @@ and config surface, produces a report where every number is re-derivable from a 
 evidence pack, applies the safe tier of changes only with your per-item approval, and
 scores each applied change against your next real sessions — with one-command rollback.
 
-Personal-first and private. Nothing leaves the machine. Read SECURITY.md for the threat
-model before you run it.
+Personal-first and private. Nothing leaves the machine unless you configure a cortex
+brain to receive what the loop learned (see "Sending learned rules to cortex" below).
+Read SECURITY.md for the threat model before you run it.
 
 ## The problem
 
@@ -399,6 +400,36 @@ badge at the top of this file links to the latest run of the same script in CI.
 Reports land in `<config-dir>/self-optimize/reports/` (override `report_dir` in
 `<config-dir>/self-optimize/config.json` — reports contain redacted transcript excerpts,
 so think before pointing this at a synced folder).
+
+### Sending learned rules to cortex
+
+A rule in CLAUDE.md is loaded into every session whether or not it applies. A cortex
+brain (a separate memory service with an HTTP API) can instead hold the rule and show
+it to an agent at the moment it bears on what the agent is doing. To send
+what the loop learned there, set two environment variables before a run:
+
+    export CORTEX_BRAIN_URL=https://<your-brain-host>
+    export CORTEX_API_TOKEN=<token>
+
+With both set, the last step of a run, and every `apply`, `rollback`, `decide` and
+`adopt`, calls `scripts/cortex_writer.py`, which posts to the brain's
+`/v1/memory/learned`:
+
+- The rule or warning of every finding you applied or adopted. The transcript miner
+  states it in the finding's `learned` field, for example
+  `{"kind": "rule", "statement": "When reporting costs, state the dollar figure; never
+  describe a cost as small", "trigger": "reporting the cost of a run, a model call or
+  a job"}`. Its provenance is the finding id, the session ids the finding cites and
+  the date. A finding you roll back, or that verification marks regressed, is
+  archived in the brain.
+- A pointer to every model-invocable skill in the inventory: its name, the path of
+  its SKILL.md and its description. The skill body stays on disk.
+
+Proposals you have not approved are never sent. Transcript text, excerpts and skill
+bodies are never sent. A local record of what was sent
+(`<state>/state/cortex_sent.json`) skips unchanged items. A failed call is printed and
+the run continues. With either variable unset, nothing is sent and nothing else
+changes.
 
 ### Reviewing in the dashboard
 
