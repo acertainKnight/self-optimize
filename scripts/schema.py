@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+import cortex_writer
 import enforcement
 import selfsignal
 
@@ -253,6 +254,10 @@ def validate_rec(rec: dict) -> list[str]:
         if t != "manual":
             errs.append("enforcement findings must be a manual action — the human "
                         "installs the check")
+    if "learned" in rec:
+        # The rule or warning the finding encodes, in one line. cortex_writer sends
+        # it to a cortex brain once the finding is applied or adopted.
+        errs += cortex_writer.validate(rec["learned"])
     if rec["category"] not in CATEGORIES:
         errs.append(f"bad category: {rec['category']}")
     if m.get("key") not in METRIC_KEYS:

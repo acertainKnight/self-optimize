@@ -67,6 +67,26 @@ prediction on every later run, and `ledger.suppress_reason` stops it being re-pr
 Rejecting one instead is an ordinary rejection, so it flows into `constraints.json` and
 the analysts do not raise it again without new evidence.
 
+## Learned payload
+
+A finding from a correction cluster, a durable correction or a recurring failure may
+carry an optional `learned` object next to its `action`: the behaviour it encodes, as
+one instruction an agent can be shown when it applies.
+
+    "learned": {"kind": "rule"|"warning",
+                "statement": "<one line, at most 300 chars>",
+                "trigger": "<one line, at most 300 chars: when it applies>"}
+
+`schema.validate_rec` checks the shape through `cortex_writer.validate`; a malformed
+object drops the finding like any other schema error. It changes nothing about how the
+finding is tiered, applied or verified, and it is left out of the finding id. When a
+cortex brain is configured, `scripts/cortex_writer.py` sends it once the finding's
+ledger status is `applied`, `verified`, `inconclusive` or `adopted`, keyed
+`self-optimize:<finding id>`, and archives it there when the status becomes
+`rolled_back` or `regressed`. Skill pointers come from `inventory.json`'s `skills`
+(name, path, description), keyed `self-optimize:skill:<name>`. What was sent is
+recorded in `<state>/state/cortex_sent.json` as `{key: payload hash}`.
+
 ## Self-application
 
 The plugin's own analyst instruction files (`agents/*.md`) register as gym artifacts
